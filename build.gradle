@@ -1,0 +1,68 @@
+apply plugin: 'com.android.library'
+
+repositories {
+    maven { url "http://www.jabylon.org/maven/" }
+}
+
+android {
+    compileSdkVersion 28
+    defaultConfig {
+        // web3j requires API level >= 26
+        minSdkVersion 26
+        targetSdkVersion 27
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        javaCompileOptions { annotationProcessorOptions { includeCompileClasspath = true } }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility 1.8
+        targetCompatibility 1.8
+    }
+    // avoid the exception of "Method xxx in android.util.Log not mocked"
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+
+    // this version will cause an error while packaging: Invalid package reference in library; not included in Android: javax.naming.directory.
+    // Referenced from org.bouncycastle.jce.provider.X509LDAPCertStoreSpi.
+//    api 'org.web3j:core:4.1.0-android'
+
+    api 'org.web3j:core:3.3.1-android'
+//    api 'com.fasterxml.jackson.core:jackson-core:2.9.6'
+//    api 'com.fasterxml.jackson.core:jackson-annotations:2.9.6'
+//    api 'com.fasterxml.jackson.core:jackson-databind:2.9.6'
+//    api 'com.squareup.okhttp3:okhttp:3.11.0'
+
+    implementation 'com.madgag.spongycastle:core:1.58.0.0'
+    implementation 'com.madgag.spongycastle:prov:1.58.0.0'
+
+//    api 'com.madgag.spongycastle:pkix:1.54.0.0'
+//    api 'com.madgag.spongycastle:pg:1.54.0.0'
+//    api 'com.madgag.spongycastle:bcpkix-jdk15on:1.58.0.0'
+//    api 'com.madgag.spongycastle:bcpg-jdk15on:1.58.0.0'
+
+//    api 'com.google.guava:guava:24.1-jre'
+//    implementation 'com.google.guava:guava:27.0-jre'
+
+    implementation 'org.apache.commons:commons-lang3:3.8.1'
+//    implementation 'org.apache.logging.log4j:log4j-api:2.3'
+//    implementation 'org.apache.logging.log4j:log4j-core:2.3'
+//    implementation 'org.apache.logging.log4j:log4j-api:2.11.1'
+//    implementation 'org.apache.logging.log4j:log4j-core:2.11.1'
+
+    implementation 'org.xbill:dns:2.0.8'
+    implementation 'gnu.getopt:java-getopt:1.0.13'
+
+    testImplementation 'org.testng:testng:6.8'
+}
