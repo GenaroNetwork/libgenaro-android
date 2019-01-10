@@ -105,9 +105,7 @@ public final class Downloader implements Runnable {
     private String excludedFarmerIds;
 
     // whether the shard is non-missing
-    private boolean[] shardPresent;
-    // whether need to use Reed-Solomon to recover file
-    private boolean isNeedRecover = false;
+    private boolean[] shardsPresent;
 
     // CachedThreadPool takes up too much memory，and it will cause memory overflow when high concurrency
     // private static final ExecutorService uploaderExecutor = Executors.newCachedThreadPool();
@@ -169,7 +167,7 @@ public final class Downloader implements Runnable {
             if (response != null) {
                 response.close();
             }
-            Log.e(TAG, String.format("Download Pointer %d failed", pointer.getIndex()));
+            Log.w(TAG, String.format("Download Pointer %d failed", pointer.getIndex()));
             downloadedBytes.addAndGet(-pointer.getDownloadedSize());
             pointer.setDownloadedSize(0);
         }
@@ -215,16 +213,21 @@ public final class Downloader implements Runnable {
                     downloadedBytes.addAndGet(delta);
                     deltaDownloaded.addAndGet(delta);
 
-                    if (deltaDownloaded.floatValue() / totalBytes >= 0.001) {  // call onProgress every 0.1%
-                       resolveFileCallback.onProgress(downloadedBytes.floatValue() / totalBytes);
-                       deltaDownloaded.set(0);
-                   }
+                    if (deltaDownloaded.floatValue() / totalBytes >= 0.001f) {  // call onProgress every 0.1%
+                        resolveFileCallback.onProgress(downloadedBytes.floatValue() / totalBytes);
+                        deltaDownloaded.set(0);
+                    } else if (downloadedBytes.longValue() == totalBytes) {
+                        resolveFileCallback.onProgress(1.0f);
+                        deltaDownloaded.set(0);
+                    } else {
+                        // do nothing
+                    }
 
-                   if (downloader.isCanceled()) {
-                       fail(response);
-                       super.completeExceptionally(new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED)));
-                       return;
-                   }
+                    if (downloader.isCanceled()) {
+                        fail(response);
+                        super.completeExceptionally(new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED)));
+                        return;
+                    }
                 }
 
                 byte[] prehashSha256 = downloadedMd.digest();
@@ -237,6 +240,10 @@ public final class Downloader implements Runnable {
                     super.completeExceptionally(new GenaroRuntimeException(genaroStrError(GENARO_FARMER_INTEGRITY_ERROR)));
                     return;
                 }
+
+                shardsPresent[pointer.getIndex()] = true;
+                pointer.getReport().setCode(GENARO_REPORT_SUCCESS);
+                pointer.getReport().setMessage(GENARO_REPORT_SHARD_DOWNLOADED);
 
                 Log.i(TAG, String.format("Download Pointer %d finished", pointer.getIndex()));
             } catch (IOException e) {
@@ -284,6 +291,9 @@ public final class Downloader implements Runnable {
         RequestShardCallbackFuture future = new RequestShardCallbackFuture(this, pointer);
         downHttpClient.newCall(request).enqueue(future);
 
+        pointer.getReport().setCode(GENARO_REPORT_FAILURE);
+        pointer.getReport().setMessage(GENARO_REPORT_DOWNLOAD_ERROR);
+
         // save the starting time of downloading
         pointer.getReport().setStart(System.currentTimeMillis());
 
@@ -291,22 +301,14 @@ public final class Downloader implements Runnable {
             future.get();
         } catch (Exception e) {
             pointer.setStatus(POINTER_ERROR);
-            pointer.getReport().setCode(GENARO_REPORT_FAILURE);
             if (e instanceof ExecutionException && e.getCause() instanceof GenaroRuntimeException &&
                     e.getCause().getMessage().equals(genaroStrError(GENARO_FARMER_INTEGRITY_ERROR))) {
                 pointer.getReport().setMessage(GENARO_REPORT_FAILED_INTEGRITY);
-            } else {
-                pointer.getReport().setMessage(GENARO_REPORT_DOWNLOAD_ERROR);
             }
         } finally {
             // save the ending time of downloading
             pointer.getReport().setEnd(System.currentTimeMillis());
         }
-
-        shardPresent[pointer.getIndex()] = true;
-
-        pointer.getReport().setCode(GENARO_REPORT_SUCCESS);
-        pointer.getReport().setMessage(GENARO_REPORT_SHARD_DOWNLOADED);
 
         return pointer;
     }
@@ -435,7 +437,7 @@ public final class Downloader implements Runnable {
 
                 if (code != 200) {
                     if (bodyNode.has("error")) {
-                        Log.e(TAG, bodyNode.get("error").asText());
+                        Log.w(TAG, bodyNode.get("error").asText());
                     }
                     return newPointer;
                 }
@@ -471,22 +473,31 @@ public final class Downloader implements Runnable {
 
     // verify if the file can be recovered.
     private void verifyRecover() {
-        boolean canRecoverShards = true;
+        boolean shardMissingError = false;
 
         int missingPointers = (int) pointers.stream().filter(pointer -> pointer.getStatus() == POINTER_MISSING).count();
-        if(file.isRs()) {
-            if(missingPointers > totalParityPointers) {
-                canRecoverShards = false;
-            } else if (missingPointers > 0) {
-                isNeedRecover = true;
-            }
-        } else {
-            if (missingPointers != 0) {
-                canRecoverShards = false;
+        int presentPointers = 0;
+        for (boolean shardPresent: shardsPresent) {
+            if (shardPresent) {
+                presentPointers += 1;
             }
         }
 
-        if(pointers.size() == 0 || !canRecoverShards) {
+        if(file.isRs()) {
+            // if the downloaded data is sufficient to recover the whole file, just stop downloading
+            if (presentPointers >= totalDataPointers) {
+                stop();
+                return;
+            } else if(missingPointers > totalParityPointers) {
+                shardMissingError = true;
+            }
+        } else {
+            if (missingPointers != 0) {
+                shardMissingError = true;
+            }
+        }
+
+        if(shardMissingError || pointers.size() == 0) {
             throw new GenaroRuntimeException(genaroStrError(GENARO_FILE_SHARD_MISSING_ERROR));
         }
     }
@@ -578,9 +589,9 @@ public final class Downloader implements Runnable {
             }
         }
 
-        shardPresent = new boolean[totalPointers];
+        shardsPresent = new boolean[totalPointers];
         for (int i = 0; i < totalPointers; i++) {
-            shardPresent[i] = false;
+            shardsPresent[i] = false;
         }
 
         try {
@@ -684,15 +695,21 @@ public final class Downloader implements Runnable {
         } catch (Exception e) {
             stop();
             if(e instanceof CancellationException) {
-                resolveFileCallback.onCancel();
+                if (isCanceled) {
+                    resolveFileCallback.onCancel();
+                    return;
+                } else {
+                    // do nothing(if the downloaded data is sufficient, may reach here)
+                }
             } else if(e instanceof ExecutionException && e.getCause() instanceof GenaroRuntimeException) {
                 resolveFileCallback.onFail(e.getCause().getMessage());
+                return;
             } else {
                 Log.w(TAG, "Warn: Would not get here");
                 e.printStackTrace();
                 resolveFileCallback.onFail(genaroStrError(GENARO_UNKNOWN_ERROR));
+                return;
             }
-            return;
         }
 
         // check if cancel() is called
@@ -702,7 +719,7 @@ public final class Downloader implements Runnable {
         }
 
         // use Reed-Solomon algorithm to recover file
-        if (isNeedRecover) {
+        if (file.isRs()) {
             // shard size >= 2GB(means that the file size > 16GB) is not supported for java version of libgenaro for now
             if (shardSize >= (1L << 31)) {
                 resolveFileCallback.onFail(genaroStrError(GENARO_FILE_RECOVER_ERROR));
@@ -737,7 +754,7 @@ public final class Downloader implements Runnable {
                     totalParityPointers, new OutputInputByteTableCodingLoop());
 
             try {
-                reedSolomon.decodeMissing(shards, shardPresent, 0, (int)shardSize);
+                reedSolomon.decodeMissing(shards, shardsPresent, 0, (int)shardSize);
             } catch (Exception e) {
                 resolveFileCallback.onFail(genaroStrError(GENARO_FILE_RECOVER_ERROR));
                 return;

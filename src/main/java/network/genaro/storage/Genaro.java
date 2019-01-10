@@ -289,7 +289,7 @@ final class Pointer {
     private int index;
     private String hash;
     private long size;
-    boolean parity;
+    private boolean parity;
 
     // token & operation & Farmer will be null if no farmer found
     private String token;
@@ -1348,12 +1348,12 @@ public final class Genaro {
 
                 if (code == 429 || code == 420) {
                     if (bodyNode.has("error")) {
-                        Log.e(TAG, bodyNode.get("error").asText());
+                        Log.w(TAG, bodyNode.get("error").asText());
                     }
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_RATE_ERROR));
                 } else if (code != 200) {
                     if (bodyNode.has("error")) {
-                        Log.e(TAG, bodyNode.get("error").asText());
+                        Log.w(TAG, bodyNode.get("error").asText());
                     }
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_POINTER_ERROR));
                 }
