@@ -154,6 +154,10 @@ public final class Uploader implements Runnable {
         this.storeFileCallback = storeFileCallback;
     }
 
+    public Uploader(final Genaro bridge, final boolean rs, final String filePath, final String fileName, final String bucketId) {
+        this(bridge, rs, filePath, fileName, bucketId, new StoreFileCallback() {});
+    }
+
     void setFutureGetBucket(CompletableFuture<Bucket> futureGetBucket) {
         this.futureGetBucket = futureGetBucket;
     }
@@ -571,7 +575,7 @@ public final class Uploader implements Runnable {
                 if (deltaUploaded.floatValue() / totalBytes >= 0.001f) {  // call onProgress every 0.1%
                     storeFileCallback.onProgress(uploadedBytes.floatValue() / totalBytes);
                     deltaUploaded.set(0);
-                } else if (uploadedBytes.longValue() == totalBytes) {
+                } else if (uploadedBytes.get() == totalBytes) {
                     storeFileCallback.onProgress(1.0f);
                     deltaUploaded.set(0);
                 } else {
@@ -715,7 +719,7 @@ public final class Uploader implements Runnable {
         return shard;
     }
 
-    private void createBucketEntry(final List<ShardTracker> shards) throws NoSuchAlgorithmException, IOException {
+    private void createBucketEntry(final List<ShardTracker> shards) throws NoSuchAlgorithmException {
         try {
             hmacId = getBucketEntryHmac(fileKey, shards);
         } catch (NoSuchAlgorithmException | InvalidKeyException e) {
