@@ -264,21 +264,30 @@ public final class Uploader implements Runnable {
             return false;
         }
 
+        Log.i(TAG, "Encrypting file...");
+        boolean isSuccess = true;
+
         try (InputStream in = new FileInputStream(originPath);
              InputStream cypherIn = new CipherInputStream(in, cipher)) {
             cryptFilePath = createTmpName(encryptedFileName, ".crypt");
             if(cryptFilePath == null) {
-                return false;
+                isSuccess = false;
+            } else {
+                cryptChannel = FileChannel.open(Paths.get(cryptFilePath), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE, StandardOpenOption.READ, StandardOpenOption.DELETE_ON_CLOSE);
+                cryptChannel.transferFrom(Channels.newChannel(cypherIn), 0, originFileSize);
             }
-
-            cryptChannel = FileChannel.open(Paths.get(cryptFilePath), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE, StandardOpenOption.READ, StandardOpenOption.DELETE_ON_CLOSE);
-            cryptChannel.transferFrom(Channels.newChannel(cypherIn), 0, originFileSize);
         } catch (Exception e) {
-            return false;
+            isSuccess = false;
         }
 
-        return true;
+        if (isSuccess) {
+            Log.i(TAG, "Encrypt file success");
+        } else {
+            Log.e(TAG, "Encrypt file failed");
+        }
+
+        return isSuccess;
     }
 
     private boolean createParityFile() {
@@ -286,6 +295,8 @@ public final class Uploader implements Runnable {
         if(parityFilePath == null) {
             return false;
         }
+
+        Log.i(TAG, "Creating parity file...");
 
         try {
             parityChannel = FileChannel.open(Paths.get(parityFilePath), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
@@ -314,9 +325,12 @@ public final class Uploader implements Runnable {
             for (int i = totalDataShards; i < totalShards; i++) {
                 parityChannel.write(ByteBuffer.wrap(shards[i], 0, (int)shardSize));
             }
-        } catch (Exception e) {
+        } catch (Exception | OutOfMemoryError e) {
+            Log.e(TAG, "Create parity file failed");
             return false;
         }
+
+        Log.i(TAG, String.format("Create parity file success", cryptFilePath));
 
         return true;
     }
@@ -562,7 +576,13 @@ public final class Uploader implements Runnable {
         }
         dataBuffer.flip();
 
-        byte[] mBlock = new byte[(int)metaSize];
+        byte[] mBlock;
+        try {
+            mBlock = new byte[(int)metaSize];
+        } catch (OutOfMemoryError e) {
+            throw new GenaroRuntimeException(genaroStrError(GENARO_OUTOFMEMORY_ERROR));
+        }
+
         dataBuffer.get(mBlock);
         UploadRequestBody uploadRequestBody = new UploadRequestBody(new ByteArrayInputStream(mBlock),
                 "application/octet-stream; charset=utf-8", new UploadRequestBody.ProgressListener() {
@@ -1075,6 +1095,9 @@ public final class Uploader implements Runnable {
             }
             return;
         }
+
+        // it's not necessary, because 1.0f is already passed to onProgress
+        // storeFileCallback.onProgress(1.0f);
 
         storeFileCallback.onFinish(fileId);
     }

@@ -42,6 +42,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
@@ -71,11 +72,15 @@ public final class Downloader implements Runnable {
     private String fileId;
     private boolean overwrite;
 
+    // the total downloaded bytes
     private AtomicLong downloadedBytes = new AtomicLong();
     private long totalBytes;
+    private long fileSize;
 
     // increased uploaded bytes since last onProgress Call
     private AtomicLong deltaDownloaded = new AtomicLong();
+
+    private AtomicBoolean stopOnProgressCall = new AtomicBoolean(false);
 
     private GenaroFile file;
     private List<Pointer> pointers;
@@ -131,6 +136,14 @@ public final class Downloader implements Runnable {
 
     public Downloader(final Genaro bridge, final String bucketId, final String fileId, final String path, final boolean overwrite) {
         this(bridge, bucketId, fileId, path, overwrite, new ResolveFileCallback() {});
+    }
+
+    public List<Pointer> getPointers() {
+        return pointers;
+    }
+
+    public int getTotalDataPointers() {
+        return totalDataPointers;
     }
 
     void setFutureGetFileInfo(CompletableFuture<GenaroFile> futureGetFileInfo) {
@@ -213,14 +226,56 @@ public final class Downloader implements Runnable {
                     downloadedBytes.addAndGet(delta);
                     deltaDownloaded.addAndGet(delta);
 
-                    if (deltaDownloaded.floatValue() / totalBytes >= 0.001f) {  // call onProgress every 0.1%
-                        resolveFileCallback.onProgress(downloadedBytes.floatValue() / totalBytes);
+                    // calculate the download progress
+                    if (!stopOnProgressCall.get() && deltaDownloaded.floatValue() / totalBytes >= 0.001f) {  // call onProgress every 0.1%
+                        float progress;
+
+                        // if rs, we will not wait for all the shards are downloaded, just download the number of "totalDataPointers",
+                        // and be aware of that the last data shard is smaller than or equal to other shards.
+                        if (file.isRs()) {
+                            List<Pointer> pointers = downloader.getPointers();
+                            Pointer lastDataPointer = pointers.get(totalDataPointers - 1);
+                            int totalDataPointers = downloader.getTotalDataPointers();
+
+                            // it will not download all shards
+                            long fakeDownBytes = pointers.stream()
+                                    .filter(pointer -> pointer.getIndex() != totalDataPointers - 1)
+                                    .sorted((o1, o2) -> o2.getDownloadedSize() > o1.getDownloadedSize() ? 1 : -1)
+                                    .limit(totalDataPointers - 1)
+                                    .mapToLong(pointer -> pointer.getDownloadedSize())
+                                    .sum();
+                            fakeDownBytes += lastDataPointer.getDownloadedSize();
+
+                            long fakeTotalBytes;
+
+                            // the last data shard is sucessfully downloaded
+                            if (!shardsPresent[totalDataPointers - 1]) {
+                                fakeTotalBytes = shardSize * totalDataPointers;
+                            } else {
+                                fakeTotalBytes = fileSize;
+                            }
+
+                            // we need to decrypt the file after all data are downloaded, so let the progress to be 99.9xx%
+                            if (fakeDownBytes >= fakeTotalBytes) {
+                                fakeDownBytes = fakeTotalBytes - 1;
+                                stopOnProgressCall.set(true);
+                            }
+
+                            progress = fakeDownBytes * 1.0f / fakeTotalBytes;
+                        } else {
+                            long downBytes = downloadedBytes.get();
+
+                            // we need to decrypt the file after all data are downloaded, so let the progress to be 99.9xx%
+                            if (downBytes >= totalBytes) {
+                                downBytes = totalBytes - 1;
+                                stopOnProgressCall.set(true);
+                            }
+
+                            progress = downBytes * 1.0f / totalBytes;
+                        }
+
+                        resolveFileCallback.onProgress(progress);
                         deltaDownloaded.set(0);
-                    } else if (downloadedBytes.get() == totalBytes) {
-                        resolveFileCallback.onProgress(1.0f);
-                        deltaDownloaded.set(0);
-                    } else {
-                        // do nothing
                     }
 
                     if (downloader.isCanceled()) {
@@ -575,7 +630,6 @@ public final class Downloader implements Runnable {
         // set shard size to the size of the first shard
         shardSize = pointers.get(0).getSize();
 
-        long fileSize = 0;
         for (Pointer pointer: pointers) {
             Log.i(TAG, pointer.toBriefString());
             long size = pointer.getSize();
@@ -748,7 +802,7 @@ public final class Downloader implements Runnable {
                     // here use "shardSize", not "size"
                     shards[i] = new byte[(int)shardSize];
                 } catch (OutOfMemoryError e) {
-                    resolveFileCallback.onFail(genaroStrError(GENARO_FILE_RECOVER_ERROR));
+                    resolveFileCallback.onFail(genaroStrError(GENARO_OUTOFMEMORY_ERROR));
                     return;
                 }
 
@@ -791,7 +845,7 @@ public final class Downloader implements Runnable {
         }
 
         // decryption:
-        Log.i(TAG, "Download complete, begin to decrypt...");
+        Log.i(TAG, "Decrypt file...");
         byte[] bucketId = Hex.decode(file.getBucket());
         byte[] index   = Hex.decode(file.getIndex());
 
@@ -850,7 +904,9 @@ public final class Downloader implements Runnable {
             Log.w(TAG, "File close exception");
         }
 
-        Log.i(TAG, "Decrypt complete, download is success");
+        Log.i(TAG, "Decrypt file success, download is completed");
+
+        resolveFileCallback.onProgress(1.0f);
 
         // download success
         resolveFileCallback.onFinish();
