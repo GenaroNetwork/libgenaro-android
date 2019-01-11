@@ -255,9 +255,7 @@ public final class Downloader implements Runnable {
                                 fakeTotalBytes = fileSize;
                             }
 
-                            // we need to decrypt the file after all data are downloaded, so let the progress to be 99.9xx%
                             if (fakeDownBytes >= fakeTotalBytes) {
-                                fakeDownBytes = fakeTotalBytes - 1;
                                 stopOnProgressCall.set(true);
                             }
 
@@ -272,6 +270,11 @@ public final class Downloader implements Runnable {
                             }
 
                             progress = downBytes * 1.0f / totalBytes;
+                        }
+
+                        // after the whole data are downloaded, Reed-Solomon algorithm and decryption may take a long time
+                        if (progress >= 0.999f) {
+                            progress = 0.999f;
                         }
 
                         resolveFileCallback.onProgress(progress);
