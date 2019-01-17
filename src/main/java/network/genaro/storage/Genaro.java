@@ -1,8 +1,5 @@
 package network.genaro.storage;
 
-import android.nfc.Tag;
-import android.util.Log;
-
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,7 +12,8 @@ import okhttp3.MediaType;
 import okhttp3.RequestBody;
 
 import java.io.IOException;
-import java.net.SocketException;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.nio.channels.FileChannel;
@@ -27,9 +25,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.appender.ConsoleAppender;
+import org.apache.logging.log4j.core.config.Configurator;
+import org.apache.logging.log4j.core.config.builder.api.AppenderComponentBuilder;
+import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilder;
+import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFactory;
+import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration;
 import org.web3j.crypto.CipherException;
 
-import org.spongycastle.util.encoders.Hex;
+import org.bouncycastle.util.encoders.Hex;
 
 import static network.genaro.storage.CryptoUtil.*;
 import static network.genaro.storage.Parameters.*;
@@ -50,6 +59,7 @@ final class ShardMeta {
 
     // Merkle Tree leaves. Each leaf is size of RIPEMD160 hash
     private String[] tree;  // [GENARO_SHARD_CHALLENGES]
+
     private int index;
     private boolean isParity;
     private long size;
@@ -226,6 +236,7 @@ final class Frame {
     }
 }
 
+// exchange report with bridge
 final class GenaroExchangeReport {
     private long start;
     private long end;
@@ -562,47 +573,163 @@ final class ShardTracker {
 }
 
 public final class Genaro {
-    private static final String TAG = "Genaro";
-    
+    static final Logger logger = LogManager.getLogger(Genaro.class);
     private static final int POINT_PAGE_COUNT = 3;
 
     private String bridgeUrl;
     private GenaroWallet wallet;
 
-    private OkHttpClient genaroHttpClient = new OkHttpClient.Builder()
-            .connectTimeout(GENARO_OKHTTP_CONNECT_TIMEOUT, TimeUnit.SECONDS)
-            .writeTimeout(GENARO_OKHTTP_WRITE_TIMEOUT, TimeUnit.SECONDS)
-            .readTimeout(GENARO_OKHTTP_READ_TIMEOUT, TimeUnit.SECONDS)
-            .build();
+    // only for test
+    private boolean test = false;
+    // only for test
+    private String privKeyForTest;
 
-    public Genaro() {}
+    private OkHttpClient genaroHttpClient;
+
+    private String proxyAddr;
+    private int proxyPort;
+
+    // the index for uploading
+    private String indexStr;
 
     public Genaro(final String bridgeUrl) {
         init(bridgeUrl);
+    }
+
+    // default, not public
+    Genaro(final String bridgeUrl, final String privKeyForTest) {
+        init(bridgeUrl);
+        this.privKeyForTest = privKeyForTest;
+        test = true;
+    }
+
+    public Genaro(final String bridgeUrl, final String proxyAddr, final int proxyPort) {
+        init(bridgeUrl, proxyAddr, proxyPort);
     }
 
     public Genaro(final String bridgeUrl, final String privKey, final String passwd) throws CipherException, IOException {
         init(bridgeUrl, privKey, passwd);
     }
 
+    public Genaro(final String bridgeUrl, final String privKey, final String passwd, final int logLevel) throws CipherException, IOException {
+        init(bridgeUrl, privKey, passwd, logLevel);
+    }
+
+    public Genaro(final String bridgeUrl, final String privKey, final String passwd, final int logLevel, final String proxyAddr, final int proxyPort) throws CipherException, IOException {
+        init(bridgeUrl, privKey, passwd, logLevel, proxyAddr, proxyPort);
+    }
+
     public void init(final String bridgeUrl) {
         this.bridgeUrl = bridgeUrl;
+
+        genaroHttpClient = new OkHttpClient.Builder()
+                .connectTimeout(GENARO_OKHTTP_CONNECT_TIMEOUT, TimeUnit.SECONDS)
+                .writeTimeout(GENARO_OKHTTP_WRITE_TIMEOUT, TimeUnit.SECONDS)
+                .readTimeout(GENARO_OKHTTP_READ_TIMEOUT, TimeUnit.SECONDS)
+                .build();
+    }
+
+    public void init(final String bridgeUrl, final String proxyAddr, final int proxyPort) {
+        this.bridgeUrl = bridgeUrl;
+
+        OkHttpClient.Builder builder = new OkHttpClient.Builder()
+                .connectTimeout(GENARO_OKHTTP_CONNECT_TIMEOUT, TimeUnit.SECONDS)
+                .writeTimeout(GENARO_OKHTTP_WRITE_TIMEOUT, TimeUnit.SECONDS)
+                .readTimeout(GENARO_OKHTTP_READ_TIMEOUT, TimeUnit.SECONDS);
+
+        // set proxy server
+        if (proxyAddr != null && !proxyAddr.trim().isEmpty() && proxyPort > 0 && proxyPort <= 65535) {
+            this.proxyAddr = proxyAddr;
+            this.proxyPort = proxyPort;
+            builder = builder.proxy(new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyAddr, proxyPort)));
+        }
+
+        genaroHttpClient = builder.build();
     }
 
     public void init(final String bridgeUrl, final String privKey, final String passwd) throws CipherException, IOException {
-        this.bridgeUrl = bridgeUrl;
-        GenaroWallet wallet = new GenaroWallet(privKey, passwd);
-        this.wallet = wallet;
+        this.init(bridgeUrl);
+        this.wallet = new GenaroWallet(privKey, passwd);
+    }
+
+    public void init(final String bridgeUrl, final String privKey, final String passwd, final int logLevel) throws CipherException, IOException {
+        this.init(bridgeUrl, privKey, passwd);
+        initLog(logLevel);
+    }
+
+    public void init(final String bridgeUrl, final String privKey, final String passwd, final int logLevel, final String proxyAddr, final int proxyPort) throws CipherException, IOException {
+        this.init(bridgeUrl, proxyAddr, proxyPort);
+        this.wallet = new GenaroWallet(privKey, passwd);
+        initLog(logLevel);
+    }
+
+    public String getIndexStr() {
+        return indexStr;
+    }
+
+    public void setIndexStr(String indexStr) {
+        this.indexStr = indexStr;
     }
 
     private void verifyInit(final boolean checkWallet) {
-        if (bridgeUrl == null || (checkWallet && wallet == null)) {
+        if (!test && (bridgeUrl == null || (checkWallet && wallet == null))) {
             throw new GenaroRuntimeException("Bridge url or wallet has not been initialized!");
         }
     }
 
+    // init log level fo log4j2
+    static void initLog(final int logLevel) {
+        Level level;
+        switch (logLevel) {
+            case 4:
+                level = Level.DEBUG;
+                break;
+            case 3:
+                level = Level.INFO;
+                break;
+            case 2:
+                level = Level.WARN;
+                break;
+            case 1:
+                level = Level.ERROR;
+                break;
+            default:
+                level = Level.OFF;
+                break;
+        }
+
+        ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
+        builder.add(builder.newFilter("ThresholdFilter", Filter.Result.ACCEPT, Filter.Result.DENY)
+                .addAttribute("level", level));
+
+        AppenderComponentBuilder appenderBuilder = builder.newAppender("Stdout", "Console").addAttribute("target",
+                ConsoleAppender.Target.SYSTEM_OUT);
+        appenderBuilder.add(builder.newLayout("PatternLayout")
+                .addAttribute("pattern", "[%d{HH:mm:ss:SSS}] [%p] - %l - %m%n"));
+        builder.add(appenderBuilder);
+        builder.add(builder.newRootLogger(level).add(builder.newAppenderRef("Stdout")));
+        Configurator.initialize(builder.build());
+
+//        final LoggerContext context = LoggerContext.getContext(false);
+//        final Configuration config = context.getConfiguration();
+//        final PatternLayout layout = PatternLayout.newBuilder().withPattern("%-5level %c{-4} - %msg%n").build();
+//        Appender appender = ConsoleAppender.newBuilder().setFollow(true).setTarget(ConsoleAppender.Target.SYSTEM_OUT)
+//                .withName("Genaro").withLayout(layout).build();
+//        appender.start();
+//        config.addAppender(appender);
+//        config.getRootLogger().addAppender(appender, level, null);
+    }
+
     public String getBridgeUrl() {
         return bridgeUrl;
+    }
+
+    public String getProxyAddr() {
+        return proxyAddr;
+    }
+
+    public int getProxyPort() {
+        return proxyPort;
     }
 
     static String genaroStrError(final int error_code)
@@ -680,6 +807,10 @@ public final class Genaro {
                 return "No errors";
             case GENARO_ALGORITHM_ERROR:
                 return "Algorithm error";
+            case GENARO_OUTOFMEMORY_ERROR:
+                return "Out of memory error";
+            case GENARO_RS_FILE_SIZE_ERROR:
+                return "File too large to use Forward Error Correction(Reed-Solomon)";
             case GENARO_UNKNOWN_ERROR:
                 // fall through
             default:
@@ -687,15 +818,29 @@ public final class Genaro {
         }
     }
 
-    byte[] getPrivateKey() { return wallet.getPrivateKey(); }
+    byte[] getPrivateKey() {
+        if (!test) {
+            return wallet.getPrivateKey();
+        } else {
+            return BasicUtil.string2Bytes(privKeyForTest);
+        }
+    }
 
     String getPublicKeyHexString() {
-        return wallet.getPublicKeyHexString();
+        if (!test) {
+            return wallet.getPublicKeyHexString();
+        } else {
+            return "";
+        }
     }
 
     String signRequest(final String method, final String path, final String body) throws NoSuchAlgorithmException {
-        String msg = method + "\n" + path + "\n" + body;
-        return wallet.signMessage(msg);
+        if (!test) {
+            String msg = method + "\n" + path + "\n" + body;
+            return wallet.signMessage(msg);
+        } else {
+            return "";
+        }
     }
 
     public String getInfo() {
@@ -726,11 +871,7 @@ public final class Genaro {
                         "Version:     " + version + "\n" +
                         "Host:        " + host + "\n";
             } catch (IOException e) {
-                if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
-                    throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
-                } else {
-                    throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
-                }
+                throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
             }
         });
 
@@ -743,8 +884,8 @@ public final class Genaro {
         return info;
     }
 
-    CompletableFuture<Bucket> getBucketFuture(final Uploader uploader, final String bucketId) {
-        return CompletableFuture.supplyAsync(() -> {
+    Bucket getBucket(final Uploader uploader, final String bucketId) throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<Bucket> fu = CompletableFuture.supplyAsync(() -> {
             verifyInit(true);
             String signature;
             try {
@@ -782,18 +923,14 @@ public final class Genaro {
                 Bucket bucket = om.readValue(responseBody, Bucket.class);
                 return bucket;
             } catch (IOException e) {
-                // BasicUtil.cancelOkHttpCallWithTag(okHttpClient, "getBucket") will cause an SocketException
-                if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+                if (uploader.isCanceled()) {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
                 } else {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
                 }
             }
         });
-    }
 
-    Bucket getBucket(final Uploader uploader, final String bucketId) throws InterruptedException, ExecutionException, TimeoutException {
-        CompletableFuture<Bucket> fu = getBucketFuture(uploader, bucketId);
         if(uploader != null) {
             uploader.setFutureGetBucket(fu);
         }
@@ -982,8 +1119,8 @@ public final class Genaro {
         });
     }
 
-    CompletableFuture<GenaroFile> getFileInfoFuture(final Downloader downloader, final String bucketId, final String fileId) {
-        return CompletableFuture.supplyAsync(() -> {
+    GenaroFile getFileInfo(final Downloader downloader, final String bucketId, final String fileId) throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<GenaroFile> fu = CompletableFuture.supplyAsync(() -> {
             verifyInit(true);
             String path = String.format("/buckets/%s/files/%s/info", bucketId, fileId);
             String signature;
@@ -1050,18 +1187,14 @@ public final class Genaro {
 
                 return file;
             } catch (IOException e) {
-                // BasicUtil.cancelOkHttpCallWithTag(okHttpClient, "getFileInfo") will cause an SocketException
-                if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+                if (downloader.isCanceled()) {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
                 } else {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
                 }
             }
         });
-    }
 
-    GenaroFile getFileInfo(final Downloader downloader, final String bucketId, final String fileId) throws InterruptedException, ExecutionException, TimeoutException {
-        CompletableFuture<GenaroFile> fu = getFileInfoFuture(downloader, bucketId, fileId);
         if(downloader != null) {
             downloader.setFutureGetFileInfo(fu);
         }
@@ -1270,14 +1403,14 @@ public final class Genaro {
         });
     }
 
-    CompletableFuture<List<Pointer>> requestPointersFuture(final Downloader downloader, final String bucketId, final String fileId) {
-        return CompletableFuture.supplyAsync(() -> {
+    List<Pointer> requestPointers(final Downloader downloader, final String bucketId, final String fileId) throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<List<Pointer>> fu = CompletableFuture.supplyAsync(() -> {
             verifyInit(true);
             List<Pointer> ps= new ArrayList<>();
 
             int skipCount = 0;
             while (true) {
-                Log.i(TAG, "Requesting next set of pointers, total pointers: " + skipCount);
+                logger.info("Requesting next set of pointers, total pointers: " + skipCount);
 
                 List<Pointer> psr;
                 try {
@@ -1291,7 +1424,7 @@ public final class Genaro {
                 }
 
                 if(psr.size() == 0) {
-                    Log.i(TAG, "Finished requesting pointers");
+                    logger.info("Finished requesting pointers");
                     break;
                 }
 
@@ -1305,10 +1438,7 @@ public final class Genaro {
 
             return ps;
         });
-    }
 
-    List<Pointer> requestPointers(final Downloader downloader, final String bucketId, final String fileId) throws InterruptedException, ExecutionException, TimeoutException {
-        CompletableFuture<List<Pointer>> fu = requestPointersFuture(downloader, bucketId, fileId);
         if(downloader != null) {
             downloader.setFutureGetPointers(fu);
         }
@@ -1317,8 +1447,9 @@ public final class Genaro {
         return fu.get(2 * GENARO_HTTP_TIMEOUT, TimeUnit.SECONDS);
     }
 
-    private CompletableFuture<List<Pointer>> requestPointersRawFuture(final Downloader downloader, final String bucketId, final String fileId, final int limit, final int skipCount) {
-        return CompletableFuture.supplyAsync(() -> {
+    private List<Pointer> requestPointersRaw(final Downloader downloader, final String bucketId, final String fileId, final int limit, final int skipCount)
+            throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<List<Pointer>> fu = CompletableFuture.supplyAsync(() -> {
             verifyInit(true);
             String queryArgs = String.format("limit=%d&skip=%d", limit, skipCount);
             String url = String.format("/buckets/%s/files/%s", bucketId, fileId);
@@ -1351,16 +1482,16 @@ public final class Genaro {
                 ObjectMapper om = new ObjectMapper();
                 JsonNode bodyNode = om.readTree(responseBody);
 
-                Log.i(TAG, String.format("Finished request pointers - JSON Response %s", responseBody));
+                logger.info(String.format("Finished request pointers - JSON Response %s", responseBody));
 
                 if (code == 429 || code == 420) {
                     if (bodyNode.has("error")) {
-                        Log.w(TAG, bodyNode.get("error").asText());
+                        logger.error(bodyNode.get("error").asText());
                     }
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_RATE_ERROR));
                 } else if (code != 200) {
                     if (bodyNode.has("error")) {
-                        Log.w(TAG, bodyNode.get("error").asText());
+                        logger.error(bodyNode.get("error").asText());
                     }
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_POINTER_ERROR));
                 }
@@ -1377,24 +1508,19 @@ public final class Genaro {
 
                 return pointers;
             } catch (IOException e) {
-                // BasicUtil.cancelOkHttpCallWithTag(okHttpClient, "requestPointersRaw") will cause an SocketException
-                if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+                if (downloader.isCanceled()) {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
                 } else {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
                 }
             }
         });
-    }
 
-    private List<Pointer> requestPointersRaw(final Downloader downloader, final String bucketId, final String fileId, final int limit, final int skipCount)
-            throws InterruptedException, ExecutionException, TimeoutException {
-        CompletableFuture<List<Pointer>> fu = requestPointersRawFuture(downloader, bucketId, fileId, limit, skipCount);
         return fu.get(GENARO_HTTP_TIMEOUT, TimeUnit.SECONDS);
     }
 
-    CompletableFuture<Boolean> isFileExistFuture(final Uploader uploader, final String bucketId, final String encryptedFileName) {
-        return CompletableFuture.supplyAsync(() -> {
+    boolean isFileExist(final Uploader uploader, final String bucketId, final String encryptedFileName) throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<Boolean> fu = CompletableFuture.supplyAsync(() -> {
             verifyInit(true);
             String escapedName;
             String path;
@@ -1435,26 +1561,22 @@ public final class Genaro {
                     throw new GenaroRuntimeException("Request file-ids failed");
                 }
             } catch (IOException e) {
-                // BasicUtil.cancelOkHttpCallWithTag(okHttpClient, "isFileExist") will cause an SocketException
-                if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+                if (uploader.isCanceled()) {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
                 } else {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
                 }
             }
         });
-    }
 
-    boolean isFileExist(final Uploader uploader, final String bucketId, final String encryptedFileName) throws InterruptedException, ExecutionException, TimeoutException {
-        CompletableFuture<Boolean> fu = isFileExistFuture(uploader, bucketId, encryptedFileName);
         if(uploader != null) {
             uploader.setFutureIsFileExists(fu);
         }
         return fu.get(GENARO_HTTP_TIMEOUT, TimeUnit.SECONDS);
     }
 
-    CompletableFuture<Frame> requestNewFrameFuture(final Uploader uploader) {
-        return CompletableFuture.supplyAsync(() -> {
+    Frame requestNewFrame(final Uploader uploader) throws InterruptedException, ExecutionException, TimeoutException {
+        CompletableFuture<Frame> fu = CompletableFuture.supplyAsync(() -> {
             verifyInit(true);
             String jsonStrBody = "{}";
 
@@ -1499,18 +1621,14 @@ public final class Genaro {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_FRAME_ERROR));
                 }
             } catch (IOException e) {
-                // BasicUtil.cancelOkHttpCallWithTag(okHttpClient, "requestNewFrame") will cause an SocketException
-                if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+                if (uploader.isCanceled()) {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
                 } else {
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
                 }
             }
         });
-    }
 
-    Frame requestNewFrame(final Uploader uploader) throws InterruptedException, ExecutionException, TimeoutException {
-        CompletableFuture<Frame> fu = requestNewFrameFuture(uploader);
         if(uploader != null) {
             uploader.setFutureRequestNewFrame(fu);
         }

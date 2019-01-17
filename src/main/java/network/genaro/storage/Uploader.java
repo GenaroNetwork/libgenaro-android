@@ -1,7 +1,5 @@
 package network.genaro.storage;
 
-import android.util.Log;
-
 import com.backblaze.erasure.OutputInputByteTableCodingLoop;
 import com.backblaze.erasure.ReedSolomon;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -24,13 +22,11 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.File;
-import java.io.ByteArrayInputStream;
-
-import java.net.SocketException;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
-import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -53,7 +49,7 @@ import java.util.concurrent.TimeoutException;
 
 import org.xbill.DNS.utils.base16;
 
-import org.spongycastle.util.encoders.Hex;
+import org.bouncycastle.util.encoders.Hex;
 
 import static network.genaro.storage.CryptoUtil.*;
 import static network.genaro.storage.Parameters.*;
@@ -62,8 +58,6 @@ import static network.genaro.storage.ShardTracker.ShardStatus.*;
 import network.genaro.storage.GenaroCallback.StoreFileCallback;
 
 public final class Uploader implements Runnable {
-    private static final String TAG = "Uploader";
-    
     public static final int GENARO_MAX_REPORT_TRIES = 2;
     public static final int GENARO_MAX_PUSH_FRAME = 3;
     public static final int GENARO_MAX_CREATE_BUCKET_ENTRY = 3;
@@ -111,6 +105,7 @@ public final class Uploader implements Runnable {
     private String hmacId;
     private String fileId;
 
+    private String indexStr;
     private byte[] index;
     private byte[] fileKey;
 
@@ -138,11 +133,7 @@ public final class Uploader implements Runnable {
     // for CPU bound application，set the thread pool size to N+1 is suggested; for I/O bound application, set the thread pool size to 2N+1 is suggested
     private final ExecutorService uploaderExecutor = Executors.newFixedThreadPool(2 * Runtime.getRuntime().availableProcessors() + 1);
 
-    private final OkHttpClient upHttpClient = new OkHttpClient.Builder()
-            .connectTimeout(GENARO_OKHTTP_CONNECT_TIMEOUT, TimeUnit.SECONDS)
-            .writeTimeout(GENARO_OKHTTP_WRITE_TIMEOUT, TimeUnit.SECONDS)
-            .readTimeout(GENARO_OKHTTP_READ_TIMEOUT, TimeUnit.SECONDS)
-            .build();
+    private final OkHttpClient upHttpClient;
 
     public Uploader(final Genaro bridge, final boolean rs, final String filePath, final String fileName, final String bucketId, final StoreFileCallback storeFileCallback) {
         this.bridge = bridge;
@@ -152,10 +143,30 @@ public final class Uploader implements Runnable {
         this.originFile = new File(filePath);
         this.bucketId = bucketId;
         this.storeFileCallback = storeFileCallback;
+
+        this.indexStr = bridge.getIndexStr();
+
+        OkHttpClient.Builder builder = new OkHttpClient.Builder()
+                .connectTimeout(GENARO_OKHTTP_CONNECT_TIMEOUT, TimeUnit.SECONDS)
+                .writeTimeout(GENARO_OKHTTP_WRITE_TIMEOUT, TimeUnit.SECONDS)
+                .readTimeout(GENARO_OKHTTP_READ_TIMEOUT, TimeUnit.SECONDS);
+
+        // set proxy server
+        String proxyAddr = bridge.getProxyAddr();
+        int proxyPort = bridge.getProxyPort();
+        if (proxyAddr != null && !proxyAddr.trim().isEmpty() && proxyPort > 0 && proxyPort <= 65535) {
+            builder = builder.proxy(new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxyAddr, proxyPort)));
+        }
+
+        upHttpClient = builder.build();
     }
 
     public Uploader(final Genaro bridge, final boolean rs, final String filePath, final String fileName, final String bucketId) {
         this(bridge, rs, filePath, fileName, bucketId, new StoreFileCallback() {});
+    }
+
+    public boolean isCanceled() {
+        return isCanceled;
     }
 
     void setFutureGetBucket(CompletableFuture<Bucket> futureGetBucket) {
@@ -179,7 +190,7 @@ public final class Uploader implements Runnable {
     }
 
     private static long shardSize(final int hops) {
-        return (long) (MIN_SHARD_SIZE * Math.pow(2, hops));
+        return (long)(MIN_SHARD_SIZE * Math.pow(2, hops));
     }
 
     private static long determineShardSize(final long fileSize, int accumulator) {
@@ -193,7 +204,7 @@ public final class Uploader implements Runnable {
         int hops = ((accumulator - SHARD_MULTIPLES_BACK) < 0 ) ? 0 : accumulator - SHARD_MULTIPLES_BACK;
 
         long byteMultiple = shardSize(accumulator);
-        double check = (double) fileSize / byteMultiple;
+        double check = (double)fileSize / byteMultiple;
 
         // Determine if bytemultiple is highest bytemultiple that is still <= size
         if (check > 0 && check <= 1) {
@@ -244,8 +255,26 @@ public final class Uploader implements Runnable {
     }
 
     private boolean createEncryptedFile() {
-        index = randomBuff(32);
+        boolean indexInvalid = true;
+        int len;
+        if (indexStr != null && (len = indexStr.length()) == 64) {
+            for(int i = 0; i < len; i++) {
+                char c = indexStr.charAt(i);
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+                    indexInvalid = false;
+                }
+            }
+        } else {
+            indexInvalid = false;
+        }
+
+        if (indexInvalid) {
+            index = Hex.decode(indexStr);
+        } else {
+            index = randomBuff(32);
+        }
 //        index = Hex.decode("1ffb37c2ac31231363a5996215e840ab75fc288f98ea77d9bee62b87f6e5852f");
+
         try {
             fileKey = CryptoUtil.generateFileKey(bridge.getPrivateKey(), Hex.decode(bucketId), index);
         } catch (NoSuchAlgorithmException e) {
@@ -264,7 +293,7 @@ public final class Uploader implements Runnable {
             return false;
         }
 
-        Log.i(TAG, "Encrypting file...");
+        Genaro.logger.info("Encrypting file...");
         boolean isSuccess = true;
 
         try (InputStream in = new FileInputStream(originPath);
@@ -282,9 +311,9 @@ public final class Uploader implements Runnable {
         }
 
         if (isSuccess) {
-            Log.i(TAG, "Encrypt file success");
+            Genaro.logger.info("Encrypt file success");
         } else {
-            Log.e(TAG, "Encrypt file failed");
+            Genaro.logger.error("Encrypt file failed");
         }
 
         return isSuccess;
@@ -296,7 +325,7 @@ public final class Uploader implements Runnable {
             return false;
         }
 
-        Log.i(TAG, "Creating parity file...");
+        Genaro.logger.info("Creating parity file...");
 
         try {
             parityChannel = FileChannel.open(Paths.get(parityFilePath), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
@@ -311,12 +340,15 @@ public final class Uploader implements Runnable {
             for (int i = 0; i < totalDataShards; i++) {
                 int readBytes = cryptChannel.read(readBuffer, shardSize * i);
                 readBuffer.flip();
+
+                // todo: when shardSize is too big(maybe 1g) it will casue an OutOfMemoryError exception
                 shards[i] = new byte[(int)shardSize];
                 readBuffer.get(shards[i], 0, readBytes);
                 readBuffer.flip();
             }
 
             for (int i = totalDataShards; i < totalShards; i++) {
+                // todo: when shardSize is too big(maybe 1g) it will casue an OutOfMemoryError exception
                 shards[i] = new byte[(int)shardSize];
             }
 
@@ -326,11 +358,11 @@ public final class Uploader implements Runnable {
                 parityChannel.write(ByteBuffer.wrap(shards[i], 0, (int)shardSize));
             }
         } catch (Exception | OutOfMemoryError e) {
-            Log.e(TAG, "Create parity file failed");
+            Genaro.logger.error("Create parity file failed");
             return false;
         }
 
-        Log.i(TAG, String.format("Create parity file success", cryptFilePath));
+        Genaro.logger.info(String.format("Create parity file success", cryptFilePath));
 
         return true;
     }
@@ -345,7 +377,7 @@ public final class Uploader implements Runnable {
             shardMeta.getChallengesAsStr()[i] = base16.toString(challenge).toLowerCase();
         }
 
-        Log.i(TAG, String.format("Creating frame for shard index %d...", shard.getIndex()));
+        Genaro.logger.info(String.format("Creating frame for shard index %d...", shard.getIndex()));
 
         // Initialize context for sha256 of encrypted data
         MessageDigest shardHashMd;
@@ -411,7 +443,7 @@ public final class Uploader implements Runnable {
 
             shardMeta.setSize(totalRead);
         } catch (IOException e) {
-            if (e instanceof ClosedByInterruptException) {
+            if (isCanceled) {
                 throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
             } else {
                 throw new GenaroRuntimeException(genaroStrError(GENARO_FILE_READ_ERROR));
@@ -443,7 +475,7 @@ public final class Uploader implements Runnable {
             }
         }
 
-        Log.i(TAG, String.format("Create frame finished for shard index %d", shard.getIndex()));
+        Genaro.logger.info(String.format("Create frame finished for shard index %d", shard.getIndex()));
 
         return shard;
     }
@@ -502,13 +534,13 @@ public final class Uploader implements Runnable {
         }
 
         for (int i = 0; i < GENARO_MAX_PUSH_FRAME; i++) {
-            Log.i(TAG, String.format("Pushing frame for shard index %d(retry: %d) - JSON body: %s", shard.getIndex(), i, jsonStrBody));
+            Genaro.logger.info(String.format("Pushing frame for shard index %d(retry: %d) - JSON body: %s", shard.getIndex(), i, jsonStrBody));
             try {
                 try (Response response = upHttpClient.newCall(request).execute()) {
                     int code = response.code();
                     String responseBody = response.body().string();
 
-                    Log.i(TAG, String.format("Push frame finished for shard index %d(retry: %d) - JSON Response: %s", shard.getIndex(), i, responseBody));
+                    Genaro.logger.info(String.format("Push frame finished for shard index %d(retry: %d) - JSON Response: %s", shard.getIndex(), i, responseBody));
 
                     if (code == 429 || code == 420) {
                         throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_RATE_ERROR));
@@ -519,8 +551,7 @@ public final class Uploader implements Runnable {
                     FarmerPointer fp = om.readValue(responseBody, FarmerPointer.class);
                     shard.setPointer(fp);
                 } catch (IOException e) {
-                    // BasicUtil.cancelOkHttpCallWithTag(okHttpClient, "pushFrame") will cause an SocketException
-                    if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+                    if (isCanceled) {
                         // if it's canceled, do not try again
                         i = GENARO_MAX_PUSH_SHARD - 1;
                         throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
@@ -565,26 +596,7 @@ public final class Uploader implements Runnable {
         long filePosition = shardMeta.getIndex() * shardSize;
         String token = shard.getPointer().getToken();
 
-        ByteBuffer dataBuffer = ByteBuffer.allocate((int)metaSize);
-        try {
-            shardChannel.read(dataBuffer, filePosition);
-        } catch (IOException e) {
-            if (shard.getPushCount() >= GENARO_MAX_PUSH_SHARD) {
-                throw new GenaroRuntimeException(genaroStrError(GENARO_FILE_READ_ERROR));
-            }
-            return shard;
-        }
-        dataBuffer.flip();
-
-        byte[] mBlock;
-        try {
-            mBlock = new byte[(int)metaSize];
-        } catch (OutOfMemoryError e) {
-            throw new GenaroRuntimeException(genaroStrError(GENARO_OUTOFMEMORY_ERROR));
-        }
-
-        dataBuffer.get(mBlock);
-        UploadRequestBody uploadRequestBody = new UploadRequestBody(new ByteArrayInputStream(mBlock),
+        UploadRequestBody uploadRequestBody = new UploadRequestBody(shardChannel, filePosition, metaSize,
                 "application/octet-stream; charset=utf-8", new UploadRequestBody.ProgressListener() {
             @Override
             public void transferred(long delta) {
@@ -621,7 +633,7 @@ public final class Uploader implements Runnable {
         // save the starting time of downloading
         shard.getReport().setStart(System.currentTimeMillis());
 
-        Log.i(TAG, String.format("Transferring Shard index %d...", shard.getIndex()));
+        Genaro.logger.info(String.format("Transferring Shard index %d...", shard.getIndex()));
         try (Response response = upHttpClient.newCall(request).execute()) {
             int code = response.code();
             response.close();
@@ -630,7 +642,7 @@ public final class Uploader implements Runnable {
                 long uploaded = shard.getUploadedSize();
                 long total = shard.getMeta().getSize();
                 if (uploaded != total) {
-                    Log.w(TAG, String.format("Shard index %d, uploaded bytes: %d, total bytes: %d", shard.getIndex(), uploaded, total));
+                    Genaro.logger.warn(String.format("Shard index %d, uploaded bytes: %d, total bytes: %d", shard.getIndex(), uploaded, total));
                     if (shard.getPushCount() >= GENARO_MAX_PUSH_SHARD) {
                         throw new GenaroRuntimeException(genaroStrError(GENARO_FARMER_INTEGRITY_ERROR));
                     }
@@ -644,9 +656,7 @@ public final class Uploader implements Runnable {
                 return shard;
             }
         } catch (IOException e) {
-            uploadedBytes.addAndGet(-shard.getUploadedSize());
-            shard.setUploadedSize(0);
-            if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+            if (isCanceled) {
                 throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
             } else if (e instanceof SocketTimeoutException) {
                 if (shard.getPushCount() >= GENARO_MAX_PUSH_SHARD) {
@@ -663,15 +673,18 @@ public final class Uploader implements Runnable {
             // save the ending time of downloading
             shard.getReport().setEnd(System.currentTimeMillis());
             if (shard.getStatus() != SHARD_PUSH_SUCCESS) {
+                uploadedBytes.addAndGet(-shard.getUploadedSize());
+                shard.setUploadedSize(0);
+
                 // Add pointer to exclude for future calls
                 String farmerId = shard.getPointer().getFarmer().getNodeID();
                 if (!excludedFarmerIds.contains(farmerId)) {
                     excludedFarmerIds.add(farmerId);
                 }
 
-                Log.i(TAG, String.format("Failed to transfer shard index %d", shard.getIndex()));
+                Genaro.logger.info(String.format("Failed to transfer shard index %d", shard.getIndex()));
             } else {
-                Log.i(TAG, String.format("Successfully transferred shard index %d", shard.getIndex()));
+                Genaro.logger.info(String.format("Successfully transferred shard index %d", shard.getIndex()));
             }
         }
 
@@ -724,7 +737,7 @@ public final class Uploader implements Runnable {
                         break;
                     } else {
                         if (bodyNode.has("error")) {
-                            Log.w(TAG, bodyNode.get("error").asText());
+                            Genaro.logger.warn(bodyNode.get("error").asText());
                         }
                     }
                 } catch (IOException e) {
@@ -746,7 +759,7 @@ public final class Uploader implements Runnable {
             throw new GenaroRuntimeException(genaroStrError(GENARO_FILE_GENERATE_HMAC_ERROR));
         }
 
-        Log.i(TAG, String.format("[%s] Creating bucket entry... ", fileName));
+        Genaro.logger.info(String.format("[%s] Creating bucket entry... ", fileName));
 
         String jsonStrBody = String.format("{\"frame\": \"%s\", \"filename\": \"%s\", \"index\": \"%s\", \"hmac\": {\"type\": \"sha512\", \"value\": \"%s\"}",
                 frameId, encryptedFileName, Hex.toHexString(index), hmacId);
@@ -771,7 +784,7 @@ public final class Uploader implements Runnable {
                 .build();
 
         for (int i = 0; i < GENARO_MAX_CREATE_BUCKET_ENTRY; i++) {
-            Log.i(TAG, String.format("Create bucket entry(retry: %d) - JSON body: %s", i, jsonStrBody));
+            Genaro.logger.info(String.format("Create bucket entry(retry: %d) - JSON body: %s", i, jsonStrBody));
             try {
                 try (Response response = upHttpClient.newCall(request).execute()) {
                     int code = response.code();
@@ -779,20 +792,20 @@ public final class Uploader implements Runnable {
                     ObjectMapper om = new ObjectMapper();
                     JsonNode bodyNode = om.readTree(responseBody);
 
-                    Log.i(TAG, String.format("Create bucket entry(retry: %d) - JSON Response: %s", i, responseBody));
+                    Genaro.logger.info(String.format("Create bucket entry(retry: %d) - JSON Response: %s", i, responseBody));
 
                     if (code != 200 && code != 201) {
                         if (bodyNode.has("error")) {
-                            Log.w(TAG, bodyNode.get("error").asText());
+                            Genaro.logger.warn(bodyNode.get("error").asText());
                         }
                         throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
                     }
 
-                    Log.i(TAG, "Successfully Added bucket entry");
+                    Genaro.logger.info("Successfully Added bucket entry");
 
                     fileId = bodyNode.get("id").asText();
                 } catch (IOException e) {
-                    if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
+                    if (isCanceled) {
                         // if it's canceled, do not try again
                         i = GENARO_MAX_CREATE_BUCKET_ENTRY - 1;
                         throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
@@ -822,16 +835,18 @@ public final class Uploader implements Runnable {
 
         // calculate shard size and count
         originFileSize = originFile.length();
+
         shardSize = determineShardSize(originFileSize, 0);
         if (shardSize <= 0) {
             storeFileCallback.onFail(genaroStrError(GENARO_FILE_SIZE_ERROR));
             return;
         }
 
-        // when shard size >= 2GB(means that the file size > 16GB), it is not supported for java version of libgenaro for now
-        if (shardSize >= (1L << 31)) {
-            storeFileCallback.onFail(genaroStrError(GENARO_FILE_SIZE_ERROR));
-            return;
+        // todo: when shard size >= 2GB(shardSize >= (1L << 31), means that the file size > 16GB) and you need to use Reed-Solomon, it is not supported for java version of libgenaro for now
+        // todo: when shard size >= 64MB(means that the file size > 512MB) and you need to use Reed-Solomon, may cause an OutOfMemoryError if use Reed-Solomon for java version of libgenaro for now
+        if (shardSize >= (1L << 26) && rs) {
+            rs = false;
+            Genaro.logger.warn(genaroStrError(GENARO_RS_FILE_SIZE_ERROR));
         }
 
         // when file size <= MIN_SHARD_SIZE, there is only one shard, Reed-Solomon is unnecessary
@@ -839,8 +854,8 @@ public final class Uploader implements Runnable {
             rs = false;
         }
 
-        totalDataShards = (int)Math.ceil((double)originFileSize / shardSize);
-        totalParityShards = rs ? (int)Math.ceil((double)totalDataShards * 2.0 / 3.0) : 0;
+        totalDataShards = (int)Math.ceil(originFileSize * 1.0 / shardSize);
+        totalParityShards = rs ? (int)Math.ceil(totalDataShards * 2.0 / 3.0) : 0;
         totalShards = totalDataShards + totalParityShards;
         totalBytes = originFileSize + totalParityShards * shardSize;
 
@@ -936,7 +951,7 @@ public final class Uploader implements Runnable {
         }
 
         // request frame id
-        Log.i(TAG, "Request frame id");
+        Genaro.logger.info("Request frame id");
         Frame frame = null;
 
         for (int i = 0; i < GENARO_MAX_REQUEST_NEW_FRAME; i++) {
@@ -971,7 +986,7 @@ public final class Uploader implements Runnable {
 
         frameId = frame.getId();
 
-        Log.i(TAG, String.format("Request frame id success, frame id: %s", frameId));
+        Genaro.logger.info(String.format("Request frame id success, frame id: %s", frameId));
 
         List<ShardTracker> shards = new ArrayList<>(totalShards);
         for (int i = 0; i < totalShards; i++) {
@@ -987,7 +1002,7 @@ public final class Uploader implements Runnable {
         storeFileCallback.onProgress(0.0f);
 
         // TODO: seems terrible for so many duplicate codes
-        CompletableFuture[] upFutures = shards
+        CompletableFuture<Void>[] upFutures = shards
                 .parallelStream()
                 .map(shard -> CompletableFuture.supplyAsync(() -> prepareFrame(shard), uploaderExecutor))
                 // 1st pushFrame
@@ -1049,7 +1064,7 @@ public final class Uploader implements Runnable {
                 storeFileCallback.onFail(e.getCause().getMessage());
                 return;
             } else {
-                Log.w(TAG, "Warn: Would not get here");
+                Genaro.logger.warn("Warn: Would not get here");
                 e.printStackTrace();
                 storeFileCallback.onFail(genaroStrError(GENARO_UNKNOWN_ERROR));
                 return;
@@ -1072,7 +1087,7 @@ public final class Uploader implements Runnable {
         }
 
         if (uploadedBytes.get() != totalBytes) {
-            Log.e(TAG, "uploadedBytes: " + uploadedBytes + ", totalBytes: " + totalBytes);
+            Genaro.logger.error("uploadedBytes: " + uploadedBytes + ", totalBytes: " + totalBytes);
             stop();
             storeFileCallback.onFail(genaroStrError(GENARO_FARMER_INTEGRITY_ERROR));
             return;
@@ -1082,12 +1097,12 @@ public final class Uploader implements Runnable {
             createBucketEntry(shards);
         } catch (Exception e) {
             stop();
-            if(e instanceof GenaroRuntimeException) {
+            if (isCanceled) {
+                storeFileCallback.onFail(genaroStrError(GENARO_TRANSFER_CANCELED));
+            } else if(e instanceof GenaroRuntimeException) {
                 storeFileCallback.onFail(e.getCause().getMessage());
             } else if(e instanceof NoSuchAlgorithmException) {
                 storeFileCallback.onFail(genaroStrError(GENARO_ALGORITHM_ERROR));
-            } else if ((e instanceof SocketException && e.getMessage().equals("Socket closed") || e.getMessage().equals("Canceled"))) {
-                storeFileCallback.onFail(genaroStrError(GENARO_TRANSFER_CANCELED));
             } else if (e instanceof SocketTimeoutException) {
                 storeFileCallback.onFail(genaroStrError(GENARO_BRIDGE_TIMEOUT_ERROR));
             } else {

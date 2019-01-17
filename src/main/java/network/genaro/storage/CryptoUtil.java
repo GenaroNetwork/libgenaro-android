@@ -14,24 +14,24 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 
 import org.apache.commons.lang3.ArrayUtils;
 
-import org.spongycastle.asn1.ASN1Integer;
-import org.spongycastle.asn1.DERSequenceGenerator;
-import org.spongycastle.asn1.x9.X9ECParameters;
-import org.spongycastle.crypto.Digest;
-import org.spongycastle.crypto.digests.RIPEMD160Digest;
-import org.spongycastle.crypto.digests.SHA256Digest;
-import org.spongycastle.crypto.digests.SHA512Digest;
-import org.spongycastle.crypto.ec.CustomNamedCurves;
-import org.spongycastle.crypto.generators.PKCS5S2ParametersGenerator;
-import org.spongycastle.crypto.macs.HMac;
-import org.spongycastle.crypto.params.ECDomainParameters;
-import org.spongycastle.crypto.params.ECPrivateKeyParameters;
-import org.spongycastle.crypto.params.KeyParameter;
-import org.spongycastle.crypto.signers.ECDSASigner;
-import org.spongycastle.crypto.signers.HMacDSAKCalculator;
-import org.spongycastle.jce.provider.BouncyCastleProvider;
-import org.spongycastle.util.encoders.Base64;
-import org.spongycastle.util.encoders.Hex;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.DERSequenceGenerator;
+import org.bouncycastle.asn1.x9.X9ECParameters;
+import org.bouncycastle.crypto.Digest;
+import org.bouncycastle.crypto.digests.RIPEMD160Digest;
+import org.bouncycastle.crypto.digests.SHA256Digest;
+import org.bouncycastle.crypto.digests.SHA512Digest;
+import org.bouncycastle.crypto.ec.CustomNamedCurves;
+import org.bouncycastle.crypto.generators.PKCS5S2ParametersGenerator;
+import org.bouncycastle.crypto.macs.HMac;
+import org.bouncycastle.crypto.params.ECDomainParameters;
+import org.bouncycastle.crypto.params.ECPrivateKeyParameters;
+import org.bouncycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.signers.ECDSASigner;
+import org.bouncycastle.crypto.signers.HMacDSAKCalculator;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.util.encoders.Base64;
+import org.bouncycastle.util.encoders.Hex;
 
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
@@ -45,7 +45,7 @@ final class CryptoUtil {
         Security.addProvider(new BouncyCastleProvider());
     }
 
-    private static final String AES_PROVIDER = "SC";
+    private static final String AES_PROVIDER = "BC";
 
     private static final int RIPEMD160_DIGEST_SIZE = 20;
     private static final int AES_GCM_DIGEST_LENGTH = 16;
@@ -168,7 +168,7 @@ final class CryptoUtil {
     }
 
     static byte[] decryptMeta(final String base64Secret, final byte[] decryptKey) throws NoSuchAlgorithmException, InvalidKeyException,
-            IllegalBlockSizeException, BadPaddingException, NoSuchPaddingException, NoSuchProviderException, InvalidAlgorithmParameterException {
+                IllegalBlockSizeException, BadPaddingException, NoSuchPaddingException, NoSuchProviderException, InvalidAlgorithmParameterException {
         byte[] encryptedData = Base64.decode(base64Secret);
 
         // get IV

@@ -17,11 +17,16 @@ Asynchronous Android library and CLI for encrypted file transfer on the Genaro n
 - Erasure encoding with reed solomon for data reliability
 - Exchange report with bridge
 - Command line interface
+- Mock bridge and farmer, and continous integration
 
 ## Feature Todo
 
 - File encryption key be provided to decrypt encrypted file
 - String literal be encrypted with AES-256-CTR and directly stored to a bucket
+
+## Issues
+
+- Upload or download file of large size(>512MB) will not use Reed-Solomon algorithm, or it will cause an OutOfMemoryError, becasue the Reed-Solomon algorithm doesn't support memory mapped files for now.
 
 ## 3rd party dependencies
 
@@ -34,7 +39,6 @@ Asynchronous Android library and CLI for encrypted file transfer on the Genaro n
 - [java-getopt](https://www.urbanophile.com/arenn/hacking/download.html) a Java command line option parser that is compatible with GNU getopt.
 - [guava](https://github.com/google/guava) and [apache.commons](https://commons.apache.org/) as utility.
 - [testng](https://testng.org/doc/index.html) for testing.
-- [maven](https://maven.apache.org/) for dependency managment.
 
 ## Used as 3rd party package
 
