@@ -24,7 +24,7 @@ Asynchronous Android library and CLI for encrypted file transfer on the Genaro n
 - File encryption key be provided to decrypt encrypted file
 - String literal be encrypted with AES-256-CTR and directly stored to a bucket
 
-## Issues
+## Issues
 
 - Upload or download file of large size(>256MB) will not use Reed-Solomon algorithm, or it may cause an OutOfMemoryError, becasue the Reed-Solomon algorithm doesn't support memory mapped files for now.
 
