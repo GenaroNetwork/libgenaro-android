@@ -1,5 +1,7 @@
 package network.genaro.storage;
 
+import android.util.Log;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -12,7 +14,7 @@ import okhttp3.Request;
 import okhttp3.MediaType;
 import okhttp3.RequestBody;
 
-import org.bouncycastle.util.encoders.Hex;
+import org.spongycastle.util.encoders.Hex;
 import org.xbill.DNS.utils.base16;
 
 import javax.crypto.CipherInputStream;
@@ -56,6 +58,8 @@ import static network.genaro.storage.Genaro.genaroStrError;
 import static network.genaro.storage.Pointer.PointerStatus.*;
 
 public final class Downloader implements Runnable {
+    private static final String TAG = "Downloader";
+
     // each shard has GENARO_DEFAULT_MIRRORS mirrors(not include the first uploaded shard) at most
     static final int GENARO_DEFAULT_MIRRORS = 5;
     static final int GENARO_MAX_REPORT_TRIES = 2;
@@ -190,7 +194,7 @@ public final class Downloader implements Runnable {
             if (response != null) {
                 response.close();
             }
-            Genaro.logger.warn(String.format("Download Pointer %d failed", pointer.getIndex()));
+            Log.w(TAG, String.format("Download Pointer %d failed", pointer.getIndex()));
             downloadedBytes.addAndGet(-pointer.getDownloadedSize());
             pointer.setDownloadedSize(0);
         }
@@ -313,7 +317,7 @@ public final class Downloader implements Runnable {
                 pointer.getReport().setCode(GENARO_REPORT_SUCCESS);
                 pointer.getReport().setMessage(GENARO_REPORT_SHARD_DOWNLOADED);
 
-                Genaro.logger.info(String.format("Download Pointer %d finished", pointer.getIndex()));
+                Log.i(TAG, String.format("Download Pointer %d finished", pointer.getIndex()));
             } catch (IOException e) {
                 fail(response);
                 if (downloader.isCanceled()) {
@@ -353,7 +357,7 @@ public final class Downloader implements Runnable {
             throw new GenaroRuntimeException(genaroStrError(GENARO_TRANSFER_CANCELED));
         }
 
-        Genaro.logger.info(String.format("Starting download Pointer %d...", pointer.getIndex()));
+        Log.i(TAG, String.format("Starting download Pointer %d...", pointer.getIndex()));
 
         RequestShardCallbackFuture future = new RequestShardCallbackFuture(this, pointer);
         downHttpClient.newCall(request).enqueue(future);
@@ -423,7 +427,7 @@ public final class Downloader implements Runnable {
                         break;
                     } else {
                         if (bodyNode.has("error")) {
-                            Genaro.logger.warn(bodyNode.get("error").asText());
+                            Log.w(TAG, bodyNode.get("error").asText());
                         }
                     }
                 } catch (IOException e) {
@@ -471,7 +475,7 @@ public final class Downloader implements Runnable {
                 }
             }
 
-            Genaro.logger.info(String.format("Requesting replacement pointer at index: %d", newPointer.getIndex()));
+            Log.i(TAG, String.format("Requesting replacement pointer at index: %d", newPointer.getIndex()));
 
             newPointer.setReplaceCount(newPointer.getReplaceCount() + 1);
 
@@ -500,11 +504,11 @@ public final class Downloader implements Runnable {
                 ObjectMapper om = new ObjectMapper();
                 JsonNode bodyNode = om.readTree(responseBody);
 
-                Genaro.logger.info(String.format("Finished request replace pointer %d - JSON Response: %s", newPointer.getIndex(), responseBody));
+                Log.i(TAG, String.format("Finished request replace pointer %d - JSON Response: %s", newPointer.getIndex(), responseBody));
 
                 if (code != 200) {
                     if (bodyNode.has("error")) {
-                        Genaro.logger.warn(bodyNode.get("error").asText());
+                        Log.w(TAG, bodyNode.get("error").asText());
                     }
                     return newPointer;
                 }
@@ -666,7 +670,7 @@ public final class Downloader implements Runnable {
         shardSize = pointers.get(0).getSize();
 
         for (Pointer pointer : pointers) {
-            Genaro.logger.info(pointer.toBriefString());
+            Log.i(TAG, pointer.toBriefString());
             long size = pointer.getSize();
             totalBytes += size;
             totalPointers += 1;
@@ -794,7 +798,7 @@ public final class Downloader implements Runnable {
                 resolveFileCallback.onFail(e.getCause().getMessage());
                 return;
             } else {
-                Genaro.logger.warn("Warn: Would not get here");
+                Log.w(TAG, "Warn: Would not get here");
                 e.printStackTrace();
                 resolveFileCallback.onFail(genaroStrError(GENARO_UNKNOWN_ERROR));
                 return;
@@ -861,7 +865,7 @@ public final class Downloader implements Runnable {
                 dataBuffers[i] = null;
             }
         } else if (downloadedBytes.get() != totalBytes) {
-            Genaro.logger.warn("Downloaded bytes is not the same with total bytes, downloaded bytes: " + downloadedBytes + ", totalBytes: " + totalBytes);
+            Log.w(TAG, "Downloaded bytes is not the same with total bytes, downloaded bytes: " + downloadedBytes + ", totalBytes: " + totalBytes);
         } else {
             // do nothing
         }
@@ -875,7 +879,7 @@ public final class Downloader implements Runnable {
         }
 
         // decryption:
-        Genaro.logger.info("Decrypt file...");
+        Log.i(TAG, "Decrypt file...");
         byte[] bucketIdBytes = Hex.decode(bucketId);
         byte[] fileIdBytes = Hex.decode(fileId);
 
@@ -948,10 +952,10 @@ public final class Downloader implements Runnable {
             downFileChannel.close();
         } catch (Exception e) {
             // do not call resolveFileCallback.onFail here
-            Genaro.logger.warn("File close exception");
+            Log.w(TAG, "File close exception");
         }
 
-        Genaro.logger.info("Decrypt file success, download is finished");
+        Log.i(TAG, "Decrypt file success, download is finished");
 
         resolveFileCallback.onProgress(1.0f);
 

@@ -26,7 +26,7 @@ Asynchronous Android library and CLI for encrypted file transfer on the Genaro n
 
 ## Issues
 
-- Upload or download file of large size(>512MB) will not use Reed-Solomon algorithm, or it will cause an OutOfMemoryError, becasue the Reed-Solomon algorithm doesn't support memory mapped files for now.
+- Upload or download file of large size(>256MB) will not use Reed-Solomon algorithm, or it may cause an OutOfMemoryError, becasue the Reed-Solomon algorithm doesn't support memory mapped files for now.
 
 ## 3rd party dependencies
 

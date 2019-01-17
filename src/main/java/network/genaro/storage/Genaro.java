@@ -1,5 +1,7 @@
 package network.genaro.storage;
 
+import android.util.Log;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -25,20 +27,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
-import org.apache.logging.log4j.core.Filter;
-import org.apache.logging.log4j.core.appender.ConsoleAppender;
-import org.apache.logging.log4j.core.config.Configurator;
-import org.apache.logging.log4j.core.config.builder.api.AppenderComponentBuilder;
-import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilder;
-import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFactory;
-import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration;
 import org.web3j.crypto.CipherException;
 
-import org.bouncycastle.util.encoders.Hex;
+import org.spongycastle.util.encoders.Hex;
 
 import static network.genaro.storage.CryptoUtil.*;
 import static network.genaro.storage.Parameters.*;
@@ -573,7 +564,8 @@ final class ShardTracker {
 }
 
 public final class Genaro {
-    static final Logger logger = LogManager.getLogger(Genaro.class);
+    private static final String TAG = "Genaro";
+
     private static final int POINT_PAGE_COUNT = 3;
 
     private String bridgeUrl;
@@ -611,12 +603,8 @@ public final class Genaro {
         init(bridgeUrl, privKey, passwd);
     }
 
-    public Genaro(final String bridgeUrl, final String privKey, final String passwd, final int logLevel) throws CipherException, IOException {
-        init(bridgeUrl, privKey, passwd, logLevel);
-    }
-
     public Genaro(final String bridgeUrl, final String privKey, final String passwd, final int logLevel, final String proxyAddr, final int proxyPort) throws CipherException, IOException {
-        init(bridgeUrl, privKey, passwd, logLevel, proxyAddr, proxyPort);
+        init(bridgeUrl, privKey, passwd, proxyAddr, proxyPort);
     }
 
     public void init(final String bridgeUrl) {
@@ -652,15 +640,9 @@ public final class Genaro {
         this.wallet = new GenaroWallet(privKey, passwd);
     }
 
-    public void init(final String bridgeUrl, final String privKey, final String passwd, final int logLevel) throws CipherException, IOException {
-        this.init(bridgeUrl, privKey, passwd);
-        initLog(logLevel);
-    }
-
-    public void init(final String bridgeUrl, final String privKey, final String passwd, final int logLevel, final String proxyAddr, final int proxyPort) throws CipherException, IOException {
+    public void init(final String bridgeUrl, final String privKey, final String passwd, final String proxyAddr, final int proxyPort) throws CipherException, IOException {
         this.init(bridgeUrl, proxyAddr, proxyPort);
         this.wallet = new GenaroWallet(privKey, passwd);
-        initLog(logLevel);
     }
 
     public String getIndexStr() {
@@ -675,49 +657,6 @@ public final class Genaro {
         if (!test && (bridgeUrl == null || (checkWallet && wallet == null))) {
             throw new GenaroRuntimeException("Bridge url or wallet has not been initialized!");
         }
-    }
-
-    // init log level fo log4j2
-    static void initLog(final int logLevel) {
-        Level level;
-        switch (logLevel) {
-            case 4:
-                level = Level.DEBUG;
-                break;
-            case 3:
-                level = Level.INFO;
-                break;
-            case 2:
-                level = Level.WARN;
-                break;
-            case 1:
-                level = Level.ERROR;
-                break;
-            default:
-                level = Level.OFF;
-                break;
-        }
-
-        ConfigurationBuilder<BuiltConfiguration> builder = ConfigurationBuilderFactory.newConfigurationBuilder();
-        builder.add(builder.newFilter("ThresholdFilter", Filter.Result.ACCEPT, Filter.Result.DENY)
-                .addAttribute("level", level));
-
-        AppenderComponentBuilder appenderBuilder = builder.newAppender("Stdout", "Console").addAttribute("target",
-                ConsoleAppender.Target.SYSTEM_OUT);
-        appenderBuilder.add(builder.newLayout("PatternLayout")
-                .addAttribute("pattern", "[%d{HH:mm:ss:SSS}] [%p] - %l - %m%n"));
-        builder.add(appenderBuilder);
-        builder.add(builder.newRootLogger(level).add(builder.newAppenderRef("Stdout")));
-        Configurator.initialize(builder.build());
-
-//        final LoggerContext context = LoggerContext.getContext(false);
-//        final Configuration config = context.getConfiguration();
-//        final PatternLayout layout = PatternLayout.newBuilder().withPattern("%-5level %c{-4} - %msg%n").build();
-//        Appender appender = ConsoleAppender.newBuilder().setFollow(true).setTarget(ConsoleAppender.Target.SYSTEM_OUT)
-//                .withName("Genaro").withLayout(layout).build();
-//        appender.start();
-//        config.addAppender(appender);
-//        config.getRootLogger().addAppender(appender, level, null);
     }
 
     public String getBridgeUrl() {
@@ -1410,7 +1349,7 @@ public final class Genaro {
 
             int skipCount = 0;
             while (true) {
-                logger.info("Requesting next set of pointers, total pointers: " + skipCount);
+                Log.i(TAG, "Requesting next set of pointers, total pointers: " + skipCount);
 
                 List<Pointer> psr;
                 try {
@@ -1424,7 +1363,7 @@ public final class Genaro {
                 }
 
                 if(psr.size() == 0) {
-                    logger.info("Finished requesting pointers");
+                    Log.i(TAG, "Finished requesting pointers");
                     break;
                 }
 
@@ -1482,16 +1421,16 @@ public final class Genaro {
                 ObjectMapper om = new ObjectMapper();
                 JsonNode bodyNode = om.readTree(responseBody);
 
-                logger.info(String.format("Finished request pointers - JSON Response %s", responseBody));
+                Log.i(TAG, String.format("Finished request pointers - JSON Response %s", responseBody));
 
                 if (code == 429 || code == 420) {
                     if (bodyNode.has("error")) {
-                        logger.error(bodyNode.get("error").asText());
+                        Log.e(TAG, bodyNode.get("error").asText());
                     }
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_RATE_ERROR));
                 } else if (code != 200) {
                     if (bodyNode.has("error")) {
-                        logger.error(bodyNode.get("error").asText());
+                        Log.e(TAG, bodyNode.get("error").asText());
                     }
                     throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_POINTER_ERROR));
                 }

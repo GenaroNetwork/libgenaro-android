@@ -24,7 +24,7 @@ import network.genaro.storage.GenaroCallback.ResolveFileCallback;
 import network.genaro.storage.GenaroCallback.StoreFileCallback;
 
 final class Cli {
-    private final static String CLI_VERSION = "libgenaro-java-1.0.0";
+    private final static String CLI_VERSION = "libgenaro-android-1.0.0";
 
     private final static String  HELP_TEXT =
             "usage: genaro [<options>] <command> [<args>]\n\n" +

@@ -1,5 +1,7 @@
 package network.genaro.storage;
 
+import android.util.Log;
+
 import com.backblaze.erasure.OutputInputByteTableCodingLoop;
 import com.backblaze.erasure.ReedSolomon;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -49,7 +51,7 @@ import java.util.concurrent.TimeoutException;
 
 import org.xbill.DNS.utils.base16;
 
-import org.bouncycastle.util.encoders.Hex;
+import org.spongycastle.util.encoders.Hex;
 
 import static network.genaro.storage.CryptoUtil.*;
 import static network.genaro.storage.Parameters.*;
@@ -58,6 +60,8 @@ import static network.genaro.storage.ShardTracker.ShardStatus.*;
 import network.genaro.storage.GenaroCallback.StoreFileCallback;
 
 public final class Uploader implements Runnable {
+    private static final String TAG = "Uploader";
+
     public static final int GENARO_MAX_REPORT_TRIES = 2;
     public static final int GENARO_MAX_PUSH_FRAME = 3;
     public static final int GENARO_MAX_CREATE_BUCKET_ENTRY = 3;
@@ -293,7 +297,7 @@ public final class Uploader implements Runnable {
             return false;
         }
 
-        Genaro.logger.info("Encrypting file...");
+        Log.i(TAG, "Encrypting file...");
         boolean isSuccess = true;
 
         try (InputStream in = new FileInputStream(originPath);
@@ -311,9 +315,9 @@ public final class Uploader implements Runnable {
         }
 
         if (isSuccess) {
-            Genaro.logger.info("Encrypt file success");
+            Log.i(TAG, "Encrypt file success");
         } else {
-            Genaro.logger.error("Encrypt file failed");
+            Log.e(TAG, "Encrypt file failed");
         }
 
         return isSuccess;
@@ -325,7 +329,7 @@ public final class Uploader implements Runnable {
             return false;
         }
 
-        Genaro.logger.info("Creating parity file...");
+        Log.i(TAG, "Creating parity file...");
 
         try {
             parityChannel = FileChannel.open(Paths.get(parityFilePath), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
@@ -358,11 +362,11 @@ public final class Uploader implements Runnable {
                 parityChannel.write(ByteBuffer.wrap(shards[i], 0, (int)shardSize));
             }
         } catch (Exception | OutOfMemoryError e) {
-            Genaro.logger.error("Create parity file failed");
+            Log.e(TAG, "Create parity file failed");
             return false;
         }
 
-        Genaro.logger.info(String.format("Create parity file success", cryptFilePath));
+        Log.i(TAG, String.format("Create parity file success", cryptFilePath));
 
         return true;
     }
@@ -377,7 +381,7 @@ public final class Uploader implements Runnable {
             shardMeta.getChallengesAsStr()[i] = base16.toString(challenge).toLowerCase();
         }
 
-        Genaro.logger.info(String.format("Creating frame for shard index %d...", shard.getIndex()));
+        Log.i(TAG, String.format("Creating frame for shard index %d...", shard.getIndex()));
 
         // Initialize context for sha256 of encrypted data
         MessageDigest shardHashMd;
@@ -475,7 +479,7 @@ public final class Uploader implements Runnable {
             }
         }
 
-        Genaro.logger.info(String.format("Create frame finished for shard index %d", shard.getIndex()));
+        Log.i(TAG, String.format("Create frame finished for shard index %d", shard.getIndex()));
 
         return shard;
     }
@@ -534,13 +538,13 @@ public final class Uploader implements Runnable {
         }
 
         for (int i = 0; i < GENARO_MAX_PUSH_FRAME; i++) {
-            Genaro.logger.info(String.format("Pushing frame for shard index %d(retry: %d) - JSON body: %s", shard.getIndex(), i, jsonStrBody));
+            Log.i(TAG, String.format("Pushing frame for shard index %d(retry: %d) - JSON body: %s", shard.getIndex(), i, jsonStrBody));
             try {
                 try (Response response = upHttpClient.newCall(request).execute()) {
                     int code = response.code();
                     String responseBody = response.body().string();
 
-                    Genaro.logger.info(String.format("Push frame finished for shard index %d(retry: %d) - JSON Response: %s", shard.getIndex(), i, responseBody));
+                    Log.i(TAG, String.format("Push frame finished for shard index %d(retry: %d) - JSON Response: %s", shard.getIndex(), i, responseBody));
 
                     if (code == 429 || code == 420) {
                         throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_RATE_ERROR));
@@ -633,7 +637,7 @@ public final class Uploader implements Runnable {
         // save the starting time of downloading
         shard.getReport().setStart(System.currentTimeMillis());
 
-        Genaro.logger.info(String.format("Transferring Shard index %d...", shard.getIndex()));
+        Log.i(TAG, String.format("Transferring Shard index %d...", shard.getIndex()));
         try (Response response = upHttpClient.newCall(request).execute()) {
             int code = response.code();
             response.close();
@@ -642,7 +646,7 @@ public final class Uploader implements Runnable {
                 long uploaded = shard.getUploadedSize();
                 long total = shard.getMeta().getSize();
                 if (uploaded != total) {
-                    Genaro.logger.warn(String.format("Shard index %d, uploaded bytes: %d, total bytes: %d", shard.getIndex(), uploaded, total));
+                    Log.w(TAG, String.format("Shard index %d, uploaded bytes: %d, total bytes: %d", shard.getIndex(), uploaded, total));
                     if (shard.getPushCount() >= GENARO_MAX_PUSH_SHARD) {
                         throw new GenaroRuntimeException(genaroStrError(GENARO_FARMER_INTEGRITY_ERROR));
                     }
@@ -682,9 +686,9 @@ public final class Uploader implements Runnable {
                     excludedFarmerIds.add(farmerId);
                 }
 
-                Genaro.logger.info(String.format("Failed to transfer shard index %d", shard.getIndex()));
+                Log.i(TAG, String.format("Failed to transfer shard index %d", shard.getIndex()));
             } else {
-                Genaro.logger.info(String.format("Successfully transferred shard index %d", shard.getIndex()));
+                Log.i(TAG, String.format("Successfully transferred shard index %d", shard.getIndex()));
             }
         }
 
@@ -737,7 +741,7 @@ public final class Uploader implements Runnable {
                         break;
                     } else {
                         if (bodyNode.has("error")) {
-                            Genaro.logger.warn(bodyNode.get("error").asText());
+                            Log.w(TAG, bodyNode.get("error").asText());
                         }
                     }
                 } catch (IOException e) {
@@ -759,7 +763,7 @@ public final class Uploader implements Runnable {
             throw new GenaroRuntimeException(genaroStrError(GENARO_FILE_GENERATE_HMAC_ERROR));
         }
 
-        Genaro.logger.info(String.format("[%s] Creating bucket entry... ", fileName));
+        Log.i(TAG, String.format("[%s] Creating bucket entry... ", fileName));
 
         String jsonStrBody = String.format("{\"frame\": \"%s\", \"filename\": \"%s\", \"index\": \"%s\", \"hmac\": {\"type\": \"sha512\", \"value\": \"%s\"}",
                 frameId, encryptedFileName, Hex.toHexString(index), hmacId);
@@ -784,7 +788,7 @@ public final class Uploader implements Runnable {
                 .build();
 
         for (int i = 0; i < GENARO_MAX_CREATE_BUCKET_ENTRY; i++) {
-            Genaro.logger.info(String.format("Create bucket entry(retry: %d) - JSON body: %s", i, jsonStrBody));
+            Log.i(TAG, String.format("Create bucket entry(retry: %d) - JSON body: %s", i, jsonStrBody));
             try {
                 try (Response response = upHttpClient.newCall(request).execute()) {
                     int code = response.code();
@@ -792,16 +796,16 @@ public final class Uploader implements Runnable {
                     ObjectMapper om = new ObjectMapper();
                     JsonNode bodyNode = om.readTree(responseBody);
 
-                    Genaro.logger.info(String.format("Create bucket entry(retry: %d) - JSON Response: %s", i, responseBody));
+                    Log.i(TAG, String.format("Create bucket entry(retry: %d) - JSON Response: %s", i, responseBody));
 
                     if (code != 200 && code != 201) {
                         if (bodyNode.has("error")) {
-                            Genaro.logger.warn(bodyNode.get("error").asText());
+                            Log.w(TAG, bodyNode.get("error").asText());
                         }
                         throw new GenaroRuntimeException(genaroStrError(GENARO_BRIDGE_REQUEST_ERROR));
                     }
 
-                    Genaro.logger.info("Successfully Added bucket entry");
+                    Log.i(TAG, "Successfully Added bucket entry");
 
                     fileId = bodyNode.get("id").asText();
                 } catch (IOException e) {
@@ -846,7 +850,7 @@ public final class Uploader implements Runnable {
         // todo: when shard size >= 64MB(means that the file size > 512MB) and you need to use Reed-Solomon, may cause an OutOfMemoryError if use Reed-Solomon for java version of libgenaro for now
         if (shardSize >= (1L << 26) && rs) {
             rs = false;
-            Genaro.logger.warn(genaroStrError(GENARO_RS_FILE_SIZE_ERROR));
+            Log.w(TAG, genaroStrError(GENARO_RS_FILE_SIZE_ERROR));
         }
 
         // when file size <= MIN_SHARD_SIZE, there is only one shard, Reed-Solomon is unnecessary
@@ -951,7 +955,7 @@ public final class Uploader implements Runnable {
         }
 
         // request frame id
-        Genaro.logger.info("Request frame id");
+        Log.i(TAG, "Request frame id");
         Frame frame = null;
 
         for (int i = 0; i < GENARO_MAX_REQUEST_NEW_FRAME; i++) {
@@ -986,7 +990,7 @@ public final class Uploader implements Runnable {
 
         frameId = frame.getId();
 
-        Genaro.logger.info(String.format("Request frame id success, frame id: %s", frameId));
+        Log.i(TAG, String.format("Request frame id success, frame id: %s", frameId));
 
         List<ShardTracker> shards = new ArrayList<>(totalShards);
         for (int i = 0; i < totalShards; i++) {
@@ -1064,7 +1068,7 @@ public final class Uploader implements Runnable {
                 storeFileCallback.onFail(e.getCause().getMessage());
                 return;
             } else {
-                Genaro.logger.warn("Warn: Would not get here");
+                Log.w(TAG, "Warn: Would not get here");
                 e.printStackTrace();
                 storeFileCallback.onFail(genaroStrError(GENARO_UNKNOWN_ERROR));
                 return;
@@ -1087,7 +1091,7 @@ public final class Uploader implements Runnable {
         }
 
         if (uploadedBytes.get() != totalBytes) {
-            Genaro.logger.error("uploadedBytes: " + uploadedBytes + ", totalBytes: " + totalBytes);
+            Log.e(TAG, "uploadedBytes: " + uploadedBytes + ", totalBytes: " + totalBytes);
             stop();
             storeFileCallback.onFail(genaroStrError(GENARO_FARMER_INTEGRITY_ERROR));
             return;
