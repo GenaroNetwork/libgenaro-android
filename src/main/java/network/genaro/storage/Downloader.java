@@ -566,8 +566,8 @@ public final class Downloader implements Runnable {
         }
 
         // todo: when shard size >= 2GB(shardSize >= (1L << 31), means that the file size > 16GB), Reed-Solomon algorithm can not work normally for java version of libgenaro for now
-        // todo: when shard size >= 64MB(means that the file size > 512MB), may cause an OutOfMemoryError if use Reed-Solomon for java version of libgenaro for now
-        if (shardSize >= (1L << 26) && file.isRs()) {
+        // todo: when shard size >= 32MB(means that the file size > 256MB), may cause an OutOfMemoryError if use Reed-Solomon for java version of libgenaro for now
+        if (shardSize >= (1L << 25) && file.isRs()) {
             shardMissingError = pointers.stream().filter(pointer -> pointer.getIndex() < totalDataPointers)
                     .anyMatch(pointer -> pointer.getStatus() == POINTER_MISSING);
             if (shardMissingError || pointers.size() == 0) {
@@ -891,7 +891,7 @@ public final class Downloader implements Runnable {
         String indexStr = file.getIndex();
 
         try {
-            if (indexStr != null && indexStr.length() == 32) {
+            if (indexStr != null && indexStr.length() == 64) {
                 // calculate decryption key based on the index
                 byte[] index = Hex.decode(indexStr);
 
