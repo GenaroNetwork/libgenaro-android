@@ -1,29 +1,12 @@
 package network.genaro.storage;
 
-import android.util.Log;
-
-import com.backblaze.erasure.OutputInputByteTableCodingLoop;
-import com.backblaze.erasure.ReedSolomon;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
-import okhttp3.OkHttpClient;
-import okhttp3.Response;
-import okhttp3.Request;
-import okhttp3.MediaType;
-import okhttp3.RequestBody;
-
-import javax.crypto.CipherInputStream;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
-import javax.crypto.Mac;
-import static javax.crypto.Cipher.ENCRYPT_MODE;
-
+import java.io.BufferedOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.File;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.SocketTimeoutException;
@@ -37,9 +20,7 @@ import java.security.InvalidKeyException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,9 +30,30 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
 
-import org.xbill.DNS.utils.base16;
+import android.util.Log;
+
+import javax.crypto.CipherInputStream;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+import javax.crypto.Mac;
+import static javax.crypto.Cipher.ENCRYPT_MODE;
+
+import com.backblaze.erasure.OutputInputByteTableCodingLoop;
+import com.backblaze.erasure.ReedSolomon;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Response;
+import okhttp3.Request;
+import okhttp3.MediaType;
+import okhttp3.RequestBody;
 
 import org.spongycastle.util.encoders.Hex;
+
+import org.xbill.DNS.utils.base16;
 
 import static network.genaro.storage.CryptoUtil.*;
 import static network.genaro.storage.Parameters.*;
@@ -70,7 +72,6 @@ public final class Uploader implements Runnable {
     public static final int GENARO_MAX_VERIFY_BUCKET_ID = 3;
     public static final int GENARO_MAX_VERIFY_FILE_NAME = 3;
 
-    private static Random random = new Random();
     private static long MAX_SHARD_SIZE = 4294967296L; // 4Gb
     private static long MIN_SHARD_SIZE = 2097152L; // 2Mb
     private static int SHARD_MULTIPLES_BACK = 4;
@@ -109,9 +110,13 @@ public final class Uploader implements Runnable {
     private String hmacId;
     private String fileId;
 
-    private String indexStr;
+    // Initialize context for sha256 of encrypted data(not include the parity shards)
+    MessageDigest sha256OfEncryptedMd;
+
     private byte[] index;
     private byte[] fileKey;
+
+    private EncryptionInfo ei;
 
     // not try to upload to these farmers
     private List<String> excludedFarmerIds = new ArrayList<>();
@@ -139,16 +144,44 @@ public final class Uploader implements Runnable {
 
     private final OkHttpClient upHttpClient;
 
-    public Uploader(final Genaro bridge, final boolean rs, final String filePath, final String fileName, final String bucketId, final StoreFileCallback storeFileCallback) {
+    // when para isFilePath of the constructor is false, will create a temp file to store fileOrData
+    File tmpFile;
+
+    public Uploader(final Genaro bridge, final boolean rs, final String fileOrData, final boolean isFilePath, final String fileName,
+                    final String bucketId, final EncryptionInfo ei, final StoreFileCallback storeFileCallback) throws GenaroException {
+        if (bridge == null || fileOrData == null || fileName == null || bucketId == null || ei == null || storeFileCallback == null) {
+            throw new GenaroException("Illegal arguments");
+        }
+
         this.bridge = bridge;
         this.rs = rs;
-        this.originPath = filePath;
+
+        if (isFilePath) {
+            this.originPath = fileOrData;
+        } else {
+            try {
+                this.tmpFile = File.createTempFile("tmp-", "");
+            } catch (Exception e) {
+                throw new GenaroException("Create temp file failed");
+            }
+
+            try {
+                OutputStream bos = new BufferedOutputStream(new FileOutputStream(tmpFile));
+                bos.write(fileOrData.getBytes());
+                bos.close();
+            } catch (IOException e) {
+                throw new GenaroException(e.getMessage());
+            }
+
+            this.originPath = tmpFile.getPath();
+        }
+
         this.fileName = fileName;
-        this.originFile = new File(filePath);
+        this.originFile = new File(this.originPath);
         this.bucketId = bucketId;
         this.storeFileCallback = storeFileCallback;
 
-        this.indexStr = bridge.getIndexStr();
+        this.ei = ei;
 
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
                 .connectTimeout(GENARO_OKHTTP_CONNECT_TIMEOUT, TimeUnit.SECONDS)
@@ -165,8 +198,8 @@ public final class Uploader implements Runnable {
         upHttpClient = builder.build();
     }
 
-    public Uploader(final Genaro bridge, final boolean rs, final String filePath, final String fileName, final String bucketId) {
-        this(bridge, rs, filePath, fileName, bucketId, new StoreFileCallback() {});
+    public Uploader(final Genaro bridge, final boolean rs, final String fileOrData, final boolean isFilePath, final String fileName, final String bucketId, final EncryptionInfo ei) throws GenaroException {
+        this(bridge, rs, fileOrData, isFilePath, fileName, bucketId, ei, new StoreFileCallback() {});
     }
 
     public boolean isCanceled() {
@@ -226,12 +259,6 @@ public final class Uploader implements Runnable {
         return determineShardSize(fileSize, ++accumulator);
     }
 
-    private static byte[] randomBuff(final int len) {
-        byte[] buff = new byte[len];
-        random.nextBytes(buff);
-        return buff;
-    }
-
     private String createTmpName(final String encryptedFileName, final String extension) {
         String tmpFolder = System.getProperty("java.io.tmpdir");
         byte[] bytesEncoded;
@@ -259,33 +286,10 @@ public final class Uploader implements Runnable {
     }
 
     private boolean createEncryptedFile() {
-        boolean indexInvalid = true;
-        int len;
-        if (indexStr != null && (len = indexStr.length()) == 64) {
-            for(int i = 0; i < len; i++) {
-                char c = indexStr.charAt(i);
-                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-                    indexInvalid = false;
-                }
-            }
-        } else {
-            indexInvalid = false;
-        }
+        index = ei.getIndex();
+        fileKey = ei.getKey();
+        byte[] ivBytes = ei.getCtr();
 
-        if (indexInvalid) {
-            index = Hex.decode(indexStr);
-        } else {
-            index = randomBuff(32);
-        }
-//        index = Hex.decode("1ffb37c2ac31231363a5996215e840ab75fc288f98ea77d9bee62b87f6e5852f");
-
-        try {
-            fileKey = CryptoUtil.generateFileKey(bridge.getPrivateKey(), Hex.decode(bucketId), index);
-        } catch (NoSuchAlgorithmException e) {
-            return false;
-        }
-
-        byte[] ivBytes = Arrays.copyOf(index, 16);
         SecretKeySpec keySpec = new SecretKeySpec(fileKey, "AES");
         IvParameterSpec iv = new IvParameterSpec(ivBytes);
 
@@ -308,7 +312,20 @@ public final class Uploader implements Runnable {
             } else {
                 cryptChannel = FileChannel.open(Paths.get(cryptFilePath), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE, StandardOpenOption.READ, StandardOpenOption.DELETE_ON_CLOSE);
+
+                // transfer InputStream to FileChannel
                 cryptChannel.transferFrom(Channels.newChannel(cypherIn), 0, originFileSize);
+
+                // calculate sha256 of the encrypted file
+                int readBytes;
+                ByteBuffer readBuffer = ByteBuffer.allocate(BLOCK_BYTES);
+                while ((readBytes = cryptChannel.read(readBuffer)) != -1) {
+                    readBuffer.flip();
+                    byte[] readData = new byte[readBytes];
+                    readBuffer.get(readData, 0, readBytes);
+                    sha256OfEncryptedMd.update(readData, 0, readBytes);
+                    readBuffer.flip();
+                }
             }
         } catch (Exception e) {
             isSuccess = false;
@@ -376,14 +393,14 @@ public final class Uploader implements Runnable {
         shardMeta.setChallenges(new byte[GENARO_SHARD_CHALLENGES][]);
         shardMeta.setChallengesAsStr(new String[GENARO_SHARD_CHALLENGES]);
         for (int i = 0; i < GENARO_SHARD_CHALLENGES; i++) {
-            byte[] challenge = randomBuff(32);
+            byte[] challenge = BasicUtil.randomBuff(32);
             shardMeta.getChallenges()[i] = challenge;
             shardMeta.getChallengesAsStr()[i] = base16.toString(challenge).toLowerCase();
         }
 
         Log.i(TAG, String.format("Creating frame for shard index %d...", shard.getIndex()));
 
-        // Initialize context for sha256 of encrypted data
+        // Initialize context for sha256 of encrypted data of shard
         MessageDigest shardHashMd;
         try {
             shardHashMd = MessageDigest.getInstance("SHA-256");
@@ -414,11 +431,10 @@ public final class Uploader implements Runnable {
 
         try {
             int readBytes;
-            final int BYTES = AES_BLOCK_SIZE * 256;
             long totalRead = 0;
             long position = shardMeta.getIndex() * shardSize;
 
-            ByteBuffer readBuffer = ByteBuffer.allocate(BYTES);
+            ByteBuffer readBuffer = ByteBuffer.allocate(BLOCK_BYTES);
             FileChannel shardChannel = shard.getShardChannel();
 
             do {
@@ -767,6 +783,13 @@ public final class Uploader implements Runnable {
 
         String jsonStrBody = String.format("{\"frame\": \"%s\", \"filename\": \"%s\", \"index\": \"%s\", \"hmac\": {\"type\": \"sha512\", \"value\": \"%s\"}",
                 frameId, encryptedFileName, Hex.toHexString(index), hmacId);
+
+        byte[] rsaKey = ei.getRsaKey();
+        byte[] rsaCtr = ei.getRsaCtr();
+        if (rsaKey != null && rsaCtr != null) {
+            jsonStrBody += String.format(", \"rsaKey\": \"%s\", \"rsaCtr\": \"%s\"", base16.toString(rsaKey).toLowerCase(), base16.toString(rsaCtr).toLowerCase());
+        }
+
         if (rs) {
             jsonStrBody += String.format(", \"erasure\": {\"type\": \"reedsolomon\"}");
         }
@@ -847,8 +870,8 @@ public final class Uploader implements Runnable {
         }
 
         // todo: when shard size >= 2GB(shardSize >= (1L << 31), means that the file size > 16GB) and you need to use Reed-Solomon, it is not supported for java version of libgenaro for now
-        // todo: when shard size >= 64MB(means that the file size > 512MB) and you need to use Reed-Solomon, may cause an OutOfMemoryError if use Reed-Solomon for java version of libgenaro for now
-        if (shardSize >= (1L << 26) && rs) {
+        // todo: when shard size >= 32MB(means that the file size > 256MB) and you need to use Reed-Solomon, may cause an OutOfMemoryError if use Reed-Solomon for java version of libgenaro for now
+        if (shardSize >= (1L << 25) && rs) {
             rs = false;
             Log.w(TAG, genaroStrError(GENARO_RS_FILE_SIZE_ERROR));
         }
@@ -862,6 +885,13 @@ public final class Uploader implements Runnable {
         totalParityShards = rs ? (int)Math.ceil(totalDataShards * 2.0 / 3.0) : 0;
         totalShards = totalDataShards + totalParityShards;
         totalBytes = originFileSize + totalParityShards * shardSize;
+
+        try {
+            sha256OfEncryptedMd = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            storeFileCallback.onFail(genaroStrError(GENARO_ALGORITHM_ERROR));
+            return;
+        }
 
         storeFileCallback.onBegin(originFileSize);
 
@@ -946,6 +976,10 @@ public final class Uploader implements Runnable {
             stop();
             storeFileCallback.onFail(genaroStrError(GENARO_FILE_ENCRYPTION_ERROR));
             return;
+        }
+
+        if (tmpFile != null) {
+            tmpFile.delete();
         }
 
         if (rs && !createParityFile()) {
@@ -1118,7 +1152,7 @@ public final class Uploader implements Runnable {
         // it's not necessary, because 1.0f is already passed to onProgress
         // storeFileCallback.onProgress(1.0f);
 
-        storeFileCallback.onFinish(fileId);
+        storeFileCallback.onFinish(fileId, sha256OfEncryptedMd.digest());
     }
 
     private void stop() {

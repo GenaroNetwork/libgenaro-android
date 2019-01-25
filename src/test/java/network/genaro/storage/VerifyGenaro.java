@@ -1,5 +1,8 @@
 package network.genaro.storage;
 
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
 import org.testng.Assert;
 import org.testng.annotations.Test;
 
@@ -11,9 +14,9 @@ import network.genaro.storage.GenaroCallback.DeleteFileCallback;
 import network.genaro.storage.GenaroCallback.ResolveFileCallback;
 import network.genaro.storage.GenaroCallback.StoreFileCallback;
 
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-
+/*
+* before run the tests, run MockBridgeFarmer first. (read "README.md" of "MockBridgeFarmer-C" directory)
+*/
 @Test()
 public final class VerifyGenaro {
     private static final String testPrivKey = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -170,36 +173,39 @@ public final class VerifyGenaro {
         Assert.assertEquals(frame.getId(), "d6367831f7f1b117ffdd0015");
     }
 
-    public void verifyStoreFile() {
+    public void verifyStoreFile() throws GenaroException {
         Genaro api = new Genaro(testBridgeUrl, testPrivKey);
-        api.setIndexStr(testIndexStr);
+        EncryptionInfo ei = api.generateEncryptionInfo(testIndexStr, testBucketId);
 
         if (!tempDir.endsWith("/")) {
             tempDir += "/";
         }
-        Uploader uploader = api.storeFile(true, tempDir + testUploadFileName, testUploadFileName, testBucketId, new StoreFileCallback() {
+
+        Uploader uploader = api.storeFile(true, tempDir + testUploadFileName, true, testUploadFileName, testBucketId, ei, new StoreFileCallback() {
             @Override
-            public void onFinish(String fileId) {
+            public void onFinish(String fileId, byte[] sha256OfEncrypted) {
                 Assert.assertEquals(fileId, "85fb0ed00de1196dc22e0f6d");
             }
+
             @Override
             public void onFail(String error) {
                 Assert.fail("Upload failed, reason: " + (error != null ? error : "Unknown") + ".");
             }
         });
+
         uploader.join();
     }
 
-    public void verifyResolveFile() {
+    public void verifyResolveFile() throws GenaroException {
         Genaro api = new Genaro(testBridgeUrl, testPrivKey);
 
         if (!tempDir.endsWith("/")) {
             tempDir += "/";
         }
-        Downloader downloader = api.resolveFile(testBucketId, testFileId, tempDir + testDownloadFileName, true, new ResolveFileCallback() {
+        Downloader downloader = api.resolveFile(testBucketId, testFileId, tempDir + testDownloadFileName, true, true, null, null, new ResolveFileCallback() {
             @Override
-            public void onFinish() {
-                // check the sha256 of the file is: 5b2eb5f37cc1bfaaf73670cafac5ab7ce247ca06e973e7de0dae940d3af6784b
+            public void onFinish(long fileBytes, byte[] sha256) {
+                Assert.assertEquals(BasicUtil.byteArrayToHexStr(sha256), "5b2eb5f37cc1bfaaf73670cafac5ab7ce247ca06e973e7de0dae940d3af6784b");
             }
             @Override
             public void onFail(String error) {
@@ -208,5 +214,20 @@ public final class VerifyGenaro {
         });
 
         downloader.join();
+    }
+
+    public void verifyEncryptAndDecryptMeta() throws Exception {
+        Genaro api = new Genaro(testBridgeUrl, testPrivKey);
+
+        if (!tempDir.endsWith("/")) {
+            tempDir += "/";
+        }
+
+        String text = "Hello你好";
+        String filePath = tempDir + "encrypted.data";
+        api.encryptMetaToFile(text, filePath);
+        String decryptedText = api.decryptMetaFromFile(filePath);
+
+        Assert.assertEquals(decryptedText, text);
     }
 }
