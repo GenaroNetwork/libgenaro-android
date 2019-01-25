@@ -1,6 +1,6 @@
 # libgenaro-android
 
-Asynchronous Android library and CLI for encrypted file transfer on the Genaro network. It's compatible with [libgenaro](https://github.com/GenaroNetwork/libgenaro).
+Asynchronous Android library and CLI for encrypted file transfer on the Genaro network written in Java 8. It's compatible with [libgenaro](https://github.com/GenaroNetwork/libgenaro).
 
 ## Features
 
